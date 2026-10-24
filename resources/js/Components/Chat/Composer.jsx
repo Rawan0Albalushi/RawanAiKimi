@@ -1,20 +1,29 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Icon from './Icon';
+
+const ACCEPTED_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 
 export default function Composer({
     form,
     copy,
     modelName,
     maxCharacters,
+    maxImageKilobytes,
     pending,
     blocked,
     configured,
     onCancel,
 }) {
     const inputRef = useRef(null);
+    const fileRef = useRef(null);
     const didFocus = useRef(false);
+    const [previewUrl, setPreviewUrl] = useState(null);
+    const [localError, setLocalError] = useState('');
+    const [dropping, setDropping] = useState(false);
     const remaining = maxCharacters - form.data.message.length;
-    const sendDisabled = form.processing || Boolean(pending) || blocked || !configured || form.data.message.trim() === '';
+    const hasImage = form.data.image instanceof File;
+    const locked = form.processing || Boolean(pending) || blocked || !configured;
+    const sendDisabled = locked || (form.data.message.trim() === '' && !hasImage);
 
     useEffect(() => {
         if (!didFocus.current) {
@@ -23,6 +32,12 @@ export default function Composer({
         }
     }, []);
 
+    useEffect(() => () => {
+        if (previewUrl) {
+            URL.revokeObjectURL(previewUrl);
+        }
+    }, [previewUrl]);
+
     function submit(event) {
         event.preventDefault();
 
@@ -30,11 +45,17 @@ export default function Composer({
             return;
         }
 
+        form.transform((data) => ({
+            message: data.message,
+            ...(data.image instanceof File ? { image: data.image } : {}),
+        }));
         form.post('/chat', {
+            forceFormData: true,
             preserveScroll: true,
             onSuccess: (page) => {
                 if (!page.props.error) {
-                    form.reset('message');
+                    form.reset('message', 'image');
+                    clearPreview();
                 }
             },
         });
@@ -47,10 +68,107 @@ export default function Composer({
         }
     }
 
+    function clearPreview() {
+        setPreviewUrl(null);
+        setLocalError('');
+
+        if (fileRef.current) {
+            fileRef.current.value = '';
+        }
+    }
+
+    function removeImage() {
+        clearPreview();
+        form.setData('image', null);
+    }
+
+    function chooseFile(file) {
+        if (!file || locked) {
+            return;
+        }
+
+        if (!ACCEPTED_TYPES.includes(file.type)) {
+            setLocalError(copy.image_invalid);
+            return;
+        }
+
+        if (file.size > maxImageKilobytes * 1024) {
+            setLocalError(copy.image_too_large);
+            return;
+        }
+
+        setLocalError('');
+        setPreviewUrl(URL.createObjectURL(file));
+        form.setData('image', file);
+
+        if (fileRef.current) {
+            fileRef.current.value = '';
+        }
+    }
+
+    function onFileChange(event) {
+        const files = Array.from(event.target.files ?? []);
+
+        if (files.length > 1) {
+            setLocalError(copy.image_one);
+            event.target.value = '';
+            return;
+        }
+
+        chooseFile(files[0]);
+    }
+
+    function onDragOver(event) {
+        event.preventDefault();
+
+        if (!locked) {
+            setDropping(true);
+        }
+    }
+
+    function onDragLeave(event) {
+        if (!event.currentTarget.contains(event.relatedTarget)) {
+            setDropping(false);
+        }
+    }
+
+    function onDrop(event) {
+        event.preventDefault();
+        setDropping(false);
+
+        if (locked) {
+            return;
+        }
+
+        const files = Array.from(event.dataTransfer.files ?? []);
+
+        if (files.length !== 1) {
+            setLocalError(copy.image_one);
+            return;
+        }
+
+        chooseFile(files[0]);
+    }
+
+    const imageError = localError || form.errors.image;
+
     return (
         <form className="composer" id="composer" onSubmit={submit}>
             <label className="visually-hidden" htmlFor="message">{copy.message_label}</label>
-            <div className="composer-box">
+            <div
+                className={dropping ? 'composer-box is-dropping' : 'composer-box'}
+                onDragOver={onDragOver}
+                onDragLeave={onDragLeave}
+                onDrop={onDrop}
+            >
+                {previewUrl ? (
+                    <div className="attachment-row">
+                        <img src={previewUrl} alt={copy.attached_image} width="72" height="72" />
+                        <button type="button" className="icon-button attachment-remove" onClick={removeImage} aria-label={copy.remove_image}>
+                            <Icon name="close" />
+                        </button>
+                    </div>
+                ) : null}
                 <textarea
                     id="message"
                     name="message"
@@ -61,7 +179,7 @@ export default function Composer({
                     value={form.data.message}
                     onChange={(event) => form.setData('message', event.target.value)}
                     onKeyDown={onKeyDown}
-                    aria-invalid={Boolean(form.errors.message)}
+                    aria-invalid={Boolean(form.errors.message || imageError)}
                     aria-describedby="message-hint"
                 />
                 {form.errors.message ? (
@@ -69,18 +187,43 @@ export default function Composer({
                         {form.errors.message}
                     </p>
                 ) : null}
+                {imageError ? (
+                    <p className="field-error" role="alert">
+                        {imageError}
+                    </p>
+                ) : null}
                 <div className="composer-foot">
                     <div className="composer-notes">
+                        <input
+                            ref={fileRef}
+                            className="visually-hidden"
+                            id="image"
+                            name="image"
+                            type="file"
+                            accept="image/jpeg,image/png,image/webp"
+                            tabIndex={-1}
+                            onChange={onFileChange}
+                            disabled={locked}
+                        />
+                        <button
+                            type="button"
+                            className="icon-button attach-image"
+                            aria-label={copy.attach_image}
+                            disabled={locked}
+                            onClick={() => fileRef.current?.click()}
+                        >
+                            <Icon name="image" />
+                        </button>
                         <p className="chip">
-                            <Icon name="text" />
-                            <span>{copy.text_only}</span>
+                            <Icon name="image" />
+                            <span>{copy.image_hint}</span>
                         </p>
                         <p className="chip chip-model">
                             <Icon name="model" />
                             <span>{modelName}</span>
                         </p>
                         <p id="message-hint" className="visually-hidden">
-                            {copy.message_hint}
+                            {copy.message_hint} {copy.drop_image}
                         </p>
                         {remaining <= 600 ? (
                             <p className="hint">{copy.characters_left.replace(':count', String(remaining))}</p>

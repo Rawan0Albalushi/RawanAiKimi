@@ -1,0 +1,28 @@
+{
+  "input": {
+    "openai_route": "/v1/chat/completions",
+    "openai_input": {
+      "model": "kimi-vl",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Describe this image."
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "data:image/jpeg;base64,REPLACE_WITH_JPEG"
+              }
+            }
+          ]
+        }
+      ],
+      "temperature": 0.2,
+      "max_tokens": 512,
+      "stream": false
+    }
+  }
+}

@@ -36,13 +36,24 @@ The amd64 image record behind the tag says `last_pushed` 18 October 2026, while 
 | `MAX_MODEL_LEN` | value flag | `--max-model-len` |
 | `MAX_NUM_SEQS` | value flag | `--max-num-seqs` |
 | `GPU_MEMORY_UTILIZATION` | value flag | `--gpu-memory-utilization` |
-| `VLLM_EXTRA_ARGS` | appended last with `shlex.split` | `--language-model-only` |
+| `VLLM_EXTRA_ARGS` | appended last with `shlex.split` | Leave unset for image mode. `--language-model-only` is the live rollback and would force every modality limit back to 0 |
+| `LIMIT_MM_PER_PROMPT` | value flag in the v2.30.0 allowlist | `image=1` |
 | `MAX_CONCURRENCY` | `main.py`, passed to `runpod.serverless.start` | one in-flight job |
 | `VLLM_STARTUP_TIMEOUT` | `main.py` health wait, seconds | 900 |
 
 Accepted true values in the builder are `true`, `1`, `yes`, and `on`. This file uses `true`.
 
-`--language-model-only` is not a named environment variable in `args_builder.py`. A variable named `LANGUAGE_MODEL_ONLY` would be ignored. It is passed only through `VLLM_EXTRA_ARGS`.
+`--language-model-only` is not a named environment variable in `args_builder.py`. A variable named `LANGUAGE_MODEL_ONLY` would be ignored. It is passed only through `VLLM_EXTRA_ARGS`. `--limit-mm-per-prompt` is a named flag: set `LIMIT_MM_PER_PROMPT=image=1`. Do not leave `--language-model-only` in `VLLM_EXTRA_ARGS` at the same time, because extra args are appended last and would disable images again. Do not set `SKIP_MM_PROFILING`.
+
+## Image inputs
+
+Prepared in `worker.env.example`. Not applied to the live endpoint.
+
+The running endpoint is still text-only: `VLLM_EXTRA_ARGS=--language-model-only`. That flag sets every modality limit to 0, so an image request is rejected until it is removed.
+
+The image-capable environment adds `LIMIT_MM_PER_PROMPT=image=1` and does not set `VLLM_EXTRA_ARGS`. Keep the model, revision, eager mode, context length, sequence cap, memory utilization, concurrency, GPU, disk, and scale settings unchanged.
+
+Rollback if the worker log shows an out-of-memory error, `Dropping MODEL_REVISION`, or a vLLM version other than 0.32.0: set max workers to 0, restore `VLLM_EXTRA_ARGS=--language-model-only`, remove `LIMIT_MM_PER_PROMPT`, and confirm the Workers tab is idle before any retry. Do not raise the context length, quantize, or change the model in that session.
 
 ## Variables that must stay unset
 

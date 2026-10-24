@@ -57,7 +57,7 @@ Do not use `/runsync` for the first application path. Its default wait is 90 sec
 ## What this design does not do
 
 - It does not stream tokens.
-- It does not send images.
+- It sends at most one image, and only on the turn that uploaded it. Laravel re-encodes that file to a JPEG data URL. It does not forward a remote image URL. The live worker still rejects images until `VLLM_EXTRA_ARGS=--language-model-only` is removed and `LIMIT_MM_PER_PROMPT=image=1` is set. That environment change is not applied from this repository.
 - It does not expose vLLM port 8000.
 - It does not store the RunPod key in the browser, in git, or in a log line.
 - It does not call the live endpoint from the test suite. The feature tests fake `/run`, `/status`, and `/cancel`.

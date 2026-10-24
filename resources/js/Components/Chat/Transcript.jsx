@@ -26,6 +26,15 @@ export default function Transcript({ transcript, copy, locale }) {
                     {clock ? <time dateTime={message.at}>{clock}</time> : null}
                 </header>
                 <p dir="auto">{message.content}</p>
+                {message.attachment?.url ? (
+                    <img
+                        className="turn-image"
+                        src={message.attachment.url}
+                        alt={copy.attached_image}
+                        width={message.attachment.width || undefined}
+                        height={message.attachment.height || undefined}
+                    />
+                ) : null}
                 {assistant && (message.latencyMs != null || message.model || message.usage?.total_tokens != null) ? (
                     <p className="meta">
                         {message.latencyMs != null ? (

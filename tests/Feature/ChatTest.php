@@ -3,11 +3,13 @@
 namespace Tests\Feature;
 
 use Illuminate\Http\Client\Request;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\Storage;
 use Inertia\Testing\AssertableInertia as Assert;
 use Tests\TestCase;
 
@@ -24,6 +26,7 @@ class ChatTest extends TestCase
             ->where('pending', null)
             ->where('configured', true)
             ->where('modelName', 'kimi-vl')
+            ->where('maxImageKilobytes', 8192)
             ->missing('apiKey')
             ->missing('endpointId'));
 
@@ -564,6 +567,198 @@ class ChatTest extends TestCase
             ->where('copy.status_queue', 'يجري تشغيل النموذج. قد يستغرق ذلك عدة دقائق في المرة الأولى.'));
     }
 
+    public function test_an_image_and_text_are_sent_as_one_data_url_without_history_or_session_bytes(): void
+    {
+        Storage::fake('local');
+        $this->fakeQueue();
+
+        $this->withSession([
+            'chat.transcript' => [
+                ['role' => 'user', 'content' => 'earlier question', 'at' => '2026-10-22T00:00:00+04:00'],
+                ['role' => 'assistant', 'content' => 'earlier answer', 'at' => '2026-10-22T00:00:01+04:00'],
+            ],
+        ])->from('/')->post('/chat', [
+            'message' => 'What is in this picture?',
+            'image' => $this->imageUpload(),
+        ])->assertRedirect(route('chat.index'));
+
+        $messages = $this->lastRun()->data()['input']['openai_input']['messages'];
+        $imageUrl = $messages[1]['content'][1]['image_url']['url'];
+
+        $this->assertCount(2, $messages);
+        $this->assertSame('system', $messages[0]['role']);
+        $this->assertIsString($messages[0]['content']);
+        $this->assertStringNotContainsString('earlier question', $messages[0]['content']);
+        $this->assertSame('What is in this picture?', $messages[1]['content'][0]['text']);
+        $this->assertSame('image_url', $messages[1]['content'][1]['type']);
+        $this->assertMatchesRegularExpression('#\Adata:image/jpeg;base64,[A-Za-z0-9+/]+={0,2}\z#', $imageUrl);
+
+        $session = json_encode(session()->all());
+        $this->assertIsString($session);
+        $this->assertStringNotContainsString('base64', $session);
+        $this->assertStringNotContainsString('data:image', $session);
+        $this->assertStringNotContainsString($imageUrl, $session);
+
+        $turns = session('chat.transcript');
+        $id = is_array($turns) ? ($turns[array_key_last($turns)]['attachment']['id'] ?? null) : null;
+        $this->assertIsString($id);
+
+        $this->get(route('chat.attachments.show', $id))
+            ->assertOk()
+            ->assertHeader('content-type', 'image/jpeg')
+            ->assertHeader('x-content-type-options', 'nosniff')
+            ->assertHeader('cache-control', 'no-store, private');
+
+        $this->flushSession();
+        $this->get(route('chat.attachments.show', $id))->assertNotFound();
+    }
+
+    public function test_a_png_is_reencoded_and_an_empty_arabic_caption_uses_the_default_prompt(): void
+    {
+        Storage::fake('local');
+        $this->fakeQueue();
+
+        $this->withSession(['locale' => 'ar'])->from('/')->post('/chat', [
+            'message' => '',
+            'image' => $this->imageUpload('png'),
+        ]);
+
+        $messages = $this->lastRun()->data()['input']['openai_input']['messages'];
+
+        $this->assertSame('صف هذه الصورة.', $messages[1]['content'][0]['text']);
+        $this->assertStringContainsString('Reply entirely in Arabic.', $messages[0]['content']);
+        $this->assertStringStartsWith('data:image/jpeg;base64,', $messages[1]['content'][1]['image_url']['url']);
+    }
+
+    public function test_a_later_text_turn_does_not_resend_the_image_and_polling_does_not_submit_again(): void
+    {
+        Storage::fake('local');
+        $this->fakeCallback();
+
+        $this->from('/')->post('/chat', [
+            'message' => 'What is in this picture?',
+            'image' => $this->imageUpload(),
+        ]);
+        $this->post('/chat/poll')->assertRedirect(route('chat.index'));
+        $this->from('/')->post('/chat', ['message' => 'Thanks']);
+
+        $messages = $this->lastRun()->data()['input']['openai_input']['messages'];
+
+        foreach ($messages as $message) {
+            $this->assertIsString($message['content']);
+        }
+
+        $encoded = json_encode($messages);
+        $this->assertIsString($encoded);
+        $this->assertStringContainsString('What is in this picture?', $encoded);
+        $this->assertStringContainsString('Thanks', $encoded);
+        $this->assertStringNotContainsString('data:image', $encoded);
+        $this->assertCount(2, $this->recordedRuns());
+    }
+
+    public function test_a_non_image_and_an_oversized_image_are_rejected_before_runpod(): void
+    {
+        Storage::fake('local');
+        Http::fake();
+
+        $this->from('/')->post('/chat', [
+            'message' => 'Look',
+            'image' => UploadedFile::fake()->create('notes.txt', 4, 'text/plain'),
+        ])->assertSessionHasErrors('image');
+
+        $this->from('/')->post('/chat', [
+            'message' => 'Look',
+            'image' => UploadedFile::fake()->create('drawing.svg', 4, 'image/svg+xml'),
+        ])->assertSessionHasErrors('image');
+
+        config(['kimi.image_max_source_edge' => 4]);
+
+        $this->from('/')->post('/chat', [
+            'message' => 'Look',
+            'image' => $this->imageUpload('jpg', 8, 8),
+        ])->assertSessionHasErrors('image');
+
+        config(['kimi.image_max_kilobytes' => 1, 'kimi.image_max_source_edge' => 8000]);
+
+        $this->from('/')->post('/chat', [
+            'message' => 'Look',
+            'image' => UploadedFile::fake()->create('big.jpg', 3, 'image/jpeg'),
+        ])->assertSessionHasErrors('image');
+
+        Http::assertNothingSent();
+        $this->assertSame([], Storage::disk('local')->allFiles('chat-images'));
+    }
+
+    public function test_clearing_the_chat_deletes_the_stored_image(): void
+    {
+        Storage::fake('local');
+        $this->fakeQueue();
+
+        $this->from('/')->post('/chat', [
+            'message' => 'Look',
+            'image' => $this->imageUpload(),
+        ]);
+
+        $this->assertNotEmpty(Storage::disk('local')->allFiles('chat-images'));
+
+        $this->post('/chat/clear')->assertRedirect(route('chat.index'));
+
+        $this->assertSame([], Storage::disk('local')->allFiles('chat-images'));
+        $this->get('/')->assertInertia(fn (Assert $page) => $page
+            ->where('transcript', [])
+            ->where('pending', null));
+    }
+
+    public function test_an_echoed_image_payload_is_redacted_from_the_log(): void
+    {
+        Storage::fake('local');
+        $logged = [];
+        Event::listen(MessageLogged::class, function (MessageLogged $event) use (&$logged): void {
+            if ($event->message === 'kimi.request_failed') {
+                $logged[] = $event;
+            }
+        });
+
+        Http::fake(function (Request $request) {
+            return Http::response([
+                'error' => [
+                    'message' => 'rejected '.json_encode($request->data()),
+                ],
+            ], 500);
+        });
+
+        $this->from('/')->post('/chat', [
+            'message' => 'Look at this',
+            'image' => $this->imageUpload(),
+        ]);
+
+        $this->assertNotEmpty($logged);
+
+        foreach ($logged as $event) {
+            $encoded = json_encode([$event->message, $event->context]);
+
+            $this->assertIsString($encoded);
+            $this->assertStringNotContainsString('base64', $encoded);
+            $this->assertStringNotContainsString('data:image', $encoded);
+            $this->assertStringNotContainsString('Look at this', $encoded);
+        }
+    }
+
+    public function test_old_chat_images_are_pruned_and_a_recent_image_stays(): void
+    {
+        Storage::fake('local');
+        $old = 'chat-images/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/old.jpg';
+        $recent = 'chat-images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/recent.jpg';
+        Storage::disk('local')->put($old, 'old');
+        Storage::disk('local')->put($recent, 'new');
+        touch(Storage::disk('local')->path($old), now()->subMinutes(400)->getTimestamp());
+
+        $this->artisan('chat-images:prune')->assertSuccessful();
+
+        Storage::disk('local')->assertMissing($old);
+        Storage::disk('local')->assertExists($recent);
+    }
+
     /**
      * @param  array<string, mixed>|null  $status
      */
@@ -658,5 +853,32 @@ class ChatTest extends TestCase
         return collect(Http::recorded())->filter(
             fn (array $pair): bool => str_ends_with($pair[0]->url(), '/run'),
         )->values();
+    }
+
+    private function imageUpload(string $extension = 'jpg', int $width = 12, int $height = 8): UploadedFile
+    {
+        if (! function_exists('imagecreatetruecolor') || ! function_exists('imagejpeg')) {
+            $this->markTestSkipped('GD is required to build a chat image.');
+        }
+
+        $image = imagecreatetruecolor($width, $height);
+        $color = imagecolorallocate($image, 30, 90, 140);
+        imagefilledrectangle($image, 0, 0, max(0, $width - 1), max(0, $height - 1), $color);
+        $path = tempnam(sys_get_temp_dir(), 'chatimg');
+        $this->assertNotFalse($path);
+
+        if ($extension === 'png') {
+            imagepng($image, $path);
+            $name = 'photo.png';
+            $mime = 'image/png';
+        } else {
+            imagejpeg($image, $path, 90);
+            $name = 'photo.jpg';
+            $mime = 'image/jpeg';
+        }
+
+        imagedestroy($image);
+
+        return new UploadedFile($path, $name, $mime, null, true);
     }
 }

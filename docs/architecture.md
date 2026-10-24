@@ -124,8 +124,9 @@ It does not assemble the vLLM payload and it does not read or write the session 
 Responsibilities:
 
 - Authorize the request by returning true. The POC has no users.
-- Validate `message`.
-- Reject non-string values and values outside 1 to 4,000 characters.
+- Validate `message`. Text alone is required. With an image, the caption may be empty and the server inserts a locale default.
+- Validate one optional `image`: JPEG, PNG, or WebP, at most 8 MB, neither edge above 8,000 pixels.
+- Reject non-string text and text longer than 4,000 characters.
 
 ### `App\Services\ChatService`
 
@@ -141,10 +142,12 @@ Responsibilities:
 Planned operations:
 
 - `transcript(): array`
-- `send(string $message): ChatTurnResult`
+- `send(string $message, ?UploadedFile $image = null): ChatTurnResult`
 - `clear(): void`
 
-`ChatService` depends on the session store and `KimiService`. It does not depend on Inertia or on an HTTP client.
+An image is stored outside the session, under `storage/app/private/chat-images/{key}/`. The session keeps that directory key, the file id, and the pixel size. The RunPod body for that turn is the system line plus one user content array with a `data:image/jpeg;base64` URL. Older turns are not included in that request. A later text-only turn uses the normal context window and does not resend the image. The live endpoint still has `--language-model-only`. The prepared next setting is `LIMIT_MM_PER_PROMPT=image=1` without that flag, and it stays unapplied until a vision boot is approved.
+
+`ChatService` depends on the session store, `ChatImageStore`, and `KimiService`. It does not depend on Inertia or on an HTTP client.
 
 ### `App\Services\KimiService`
 

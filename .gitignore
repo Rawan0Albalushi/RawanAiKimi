@@ -5,6 +5,7 @@
 /public/hot
 /public/storage
 /storage/*.key
+/storage/app/private/chat-images/
 /storage/pail
 /storage/logs
 /storage/framework/cache/data

@@ -108,6 +108,19 @@ const glyphs = {
             <path d="M5 17h9" />
         </>
     ),
+    image: (
+        <>
+            <rect x="4" y="5" width="16" height="14" rx="2" />
+            <circle cx="9" cy="10" r="1.25" />
+            <path d="m4 16 4.5-4.5 3 3L15 11l5 5" />
+        </>
+    ),
+    close: (
+        <>
+            <path d="M7 7l10 10" />
+            <path d="M17 7 7 17" />
+        </>
+    ),
     message: (
         <>
             <path d="M5 6h14v10H8l-3 3z" />

@@ -616,8 +616,42 @@ a {
     box-shadow: var(--shadow);
 }
 
-.composer-box:focus-within {
+.composer-box:focus-within,
+.composer-box.is-dropping {
     border-color: var(--wine);
+}
+
+.attachment-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 12px 0;
+}
+
+.attachment-row img {
+    width: 72px;
+    height: 72px;
+    flex: none;
+    object-fit: cover;
+    border-radius: 12px;
+    background: var(--blush);
+}
+
+.attach-image {
+    border: 1px solid var(--line);
+    background: #fff;
+}
+
+.attach-image:disabled {
+    opacity: 0.45;
+}
+
+.turn-image {
+    display: block;
+    width: min(100%, 16rem);
+    height: auto;
+    margin-top: 8px;
+    border-radius: 12px;
 }
 
 .composer textarea {

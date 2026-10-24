@@ -16,11 +16,12 @@ export default function Index({
     configured,
     pollIntervalMs,
     maxCharacters,
+    maxImageKilobytes,
     modelName,
     copy,
 }) {
     const { locale } = usePage().props;
-    const form = useForm({ message: '' });
+    const form = useForm({ message: '', image: null });
     const endRef = useRef(null);
     const polling = useRef(false);
     const [navOpen, setNavOpen] = useState(false);
@@ -209,6 +210,7 @@ export default function Index({
                             copy={copy}
                             modelName={modelName}
                             maxCharacters={maxCharacters}
+                            maxImageKilobytes={maxImageKilobytes}
                             pending={pending}
                             blocked={blocked}
                             configured={configured}

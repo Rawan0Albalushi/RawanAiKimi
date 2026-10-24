@@ -78,6 +78,7 @@ This document defines what the finished POC must do. It does not authorize imple
 - Phase 1 documentation, which this repository now holds.
 - Later phases described in [implementation-plan.md](implementation-plan.md): compatibility verification, cost validation, a short RunPod rental after approval, vLLM serving the official weights, direct API checks, the unified Laravel chat application, SSH integration, tests, and the POC report.
 - Temporary multi-turn text chat in Arabic and English.
+- One image with the message that uploads it. JPEG, PNG, and WebP are re-encoded to a private JPEG. Later text turns do not resend it.
 - Latency display and a basic GPU memory sample during tests.
 
 ## Out of scope
@@ -86,7 +87,7 @@ This document defines what the finished POC must do. It does not authorize imple
 - MySQL, Redis, and any requirement that the application refuse to boot without a database.
 - Permanent chat history.
 - Admin screens.
-- File uploads, image inputs, OCR, and video. The checkpoint is a vision-language model; the POC uses it for text chat only.
+- File uploads other than one chat image, OCR, and video. The live worker still has `--language-model-only`, which disables image inputs. `LIMIT_MM_PER_PROMPT=image=1` is prepared in the repository and is not applied until a separate vision-boot approval.
 - Fine-tuning, quantization jobs, and training. Quantization may be investigated as a compatibility alternative in Phase 2. It is not implemented unless a later approval adopts it.
 - Publishing vLLM to the public internet.
 - Production hosting, CI/CD, autoscaling, and a queue worker for inference.

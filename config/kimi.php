@@ -57,4 +57,21 @@ return [
 
     'system_prompt' => env('KIMI_SYSTEM_PROMPT', 'You are a helpful assistant.'),
 
+    /*
+    | One image per prompt. The worker context is 2,048 tokens, and a large
+    | image already costs about 1,024 of them. These limits are applied before
+    | the file is decoded and again when it is re-encoded.
+    |
+    */
+
+    'image_max_kilobytes' => max(1, (int) env('KIMI_IMAGE_MAX_KILOBYTES', 8192)),
+
+    'image_max_source_edge' => max(1, (int) env('KIMI_IMAGE_MAX_SOURCE_EDGE', 8000)),
+
+    'image_max_edge' => max(1, (int) env('KIMI_IMAGE_MAX_EDGE', 1024)),
+
+    'image_jpeg_quality' => max(1, min(100, (int) env('KIMI_IMAGE_JPEG_QUALITY', 85))),
+
+    'image_retention_minutes' => max(1, (int) env('KIMI_IMAGE_RETENTION_MINUTES', 180)),
+
 ];

@@ -28,7 +28,7 @@ The objective is evidence of self-hosting, not a multi-user product.
 In scope for the completed POC:
 
 - A React chat screen inside the Laravel application.
-- Arabic and English text messages.
+- Arabic and English text messages, with one optional JPEG, PNG, or WebP image on the same turn.
 - Multi-turn context held in the Laravel file session for the current browser session.
 - Loading and error states, including inference timeouts.
 - A protected connection from the developer machine to vLLM.
@@ -41,7 +41,7 @@ Out of scope:
 - MySQL or any other application database.
 - Permanent conversation history.
 - An admin dashboard.
-- Image upload and image analysis, even though the selected checkpoint is a vision-language model.
+- OCR, video, and more than one image in a message.
 - Fine-tuning, training, public deployment, billing, and subscriptions.
 
 Detailed requirements are in [docs/requirements.md](docs/requirements.md).
@@ -108,7 +108,7 @@ GPU hourly prices from third-party listings are not treated as current RunPod pr
 | Application | Laravel 13.38, Inertia React, file session, file cache |
 | Tests | PHPUnit, RunPod HTTP client faked. No GPU required |
 | Model | `moonshotai/Kimi-VL-A3B-Instruct` |
-| Reported worker | `runpod/worker-v1-vllm:v2.30.0`, vLLM 0.32.0, text-only `--language-model-only` |
+| Reported worker | `runpod/worker-v1-vllm:v2.30.0`, vLLM 0.32.0. The live endpoint is still text-only via `VLLM_EXTRA_ARGS=--language-model-only`. The prepared image setting, not applied, is `LIMIT_MM_PER_PROMPT=image=1` with that flag removed |
 | Reported endpoint | `f6icz11anfucte`, served model `kimi-vl`, workers scaled to zero after the operator's smoke test |
 | Revision pin | `398eede0903cd983a2bfa0cc634e9ac1d843f375`. A completed `/run` does not by itself prove this revision was loaded |
 | Spend from this application | None. Do not send a live message without approval |

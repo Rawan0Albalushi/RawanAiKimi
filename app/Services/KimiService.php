@@ -15,13 +15,13 @@ class KimiService
     private const ALLOWED_HOST = 'api.runpod.ai';
 
     /**
-     * @param  array<int, array{role: string, content: string}>  $messages
+     * @param  array<int, array{role: string, content: string|array<int, array<string, mixed>>}>  $messages
      */
     public function submit(array $messages): SubmittedJob
     {
         $endpointId = $this->configuredEndpointId();
         $messages = $this->sanitizeMessages($messages);
-        $sensitive = array_column($messages, 'content');
+        $sensitive = $this->sensitiveTexts($messages);
 
         if (! collect($messages)->contains(fn (array $message): bool => $message['role'] === 'user')) {
             throw new InferenceException(__('chat.message_required'));
@@ -315,7 +315,7 @@ class KimiService
 
     /**
      * @param  array<int, mixed>  $messages
-     * @return array<int, array{role: string, content: string}>
+     * @return array<int, array<string, mixed>>
      */
     private function sanitizeMessages(array $messages): array
     {
@@ -327,9 +327,9 @@ class KimiService
             }
 
             $role = $message['role'] ?? null;
-            $content = $message['content'] ?? null;
+            $content = $this->sanitizeContent($role, $message['content'] ?? null);
 
-            if (! in_array($role, ['system', 'user', 'assistant'], true) || ! is_string($content)) {
+            if (! in_array($role, ['system', 'user', 'assistant'], true) || $content === null) {
                 continue;
             }
 
@@ -340,6 +340,78 @@ class KimiService
         }
 
         return $clean;
+    }
+
+    private function sanitizeContent(mixed $role, mixed $content): string|array|null
+    {
+        if (is_string($content)) {
+            return $content;
+        }
+
+        if ($role !== 'user' || ! is_array($content) || count($content) !== 2 || ! array_is_list($content)) {
+            return null;
+        }
+
+        $text = $content[0];
+        $image = $content[1];
+
+        if (! is_array($text) || ! is_array($image) || count($text) !== 2 || count($image) !== 2) {
+            return null;
+        }
+
+        if (($text['type'] ?? null) !== 'text' || ! is_string($text['text'] ?? null) || trim($text['text']) === '') {
+            return null;
+        }
+
+        if (($image['type'] ?? null) !== 'image_url' || ! is_array($image['image_url'] ?? null) || count($image['image_url']) !== 1) {
+            return null;
+        }
+
+        $url = $image['image_url']['url'] ?? null;
+
+        if (! is_string($url) || preg_match('#\Adata:image/jpeg;base64,[A-Za-z0-9+/]+={0,2}\z#', $url) !== 1) {
+            return null;
+        }
+
+        if (strlen($url) > 8_000_000) {
+            return null;
+        }
+
+        return [
+            ['type' => 'text', 'text' => $text['text']],
+            ['type' => 'image_url', 'image_url' => ['url' => $url]],
+        ];
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $messages
+     * @return array<int, string>
+     */
+    private function sensitiveTexts(array $messages): array
+    {
+        $texts = [];
+
+        foreach ($messages as $message) {
+            $content = $message['content'] ?? null;
+
+            if (is_string($content)) {
+                $texts[] = $content;
+
+                continue;
+            }
+
+            if (! is_array($content)) {
+                continue;
+            }
+
+            foreach ($content as $part) {
+                if (is_array($part) && ($part['type'] ?? null) === 'text' && is_string($part['text'] ?? null)) {
+                    $texts[] = $part['text'];
+                }
+            }
+        }
+
+        return $texts;
     }
 
     private function request(int $timeout): PendingRequest
@@ -518,6 +590,8 @@ class KimiService
         }
 
         $redacted = preg_replace('/Bearer\s+\S+/i', '[redacted]', $clean);
+        $clean = is_string($redacted) ? $redacted : $clean;
+        $redacted = preg_replace('/data:image\\\\?\/[a-z0-9.+-]+;base64,[A-Za-z0-9+\/=\\\\]+/i', '[redacted]', $clean);
         $clean = is_string($redacted) ? $redacted : $clean;
 
         $secrets = array_filter($sensitive, fn (mixed $value): bool => is_string($value) && $value !== '');

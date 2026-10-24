@@ -2,7 +2,9 @@
 
 namespace App\Services;
 
+use App\Exceptions\ImageStoreException;
 use App\Exceptions\InferenceException;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Str;
 
 class ChatService
@@ -19,9 +21,12 @@ class ChatService
 
     private const BLOCKED = 'chat.blocked';
 
-    public function __construct(private readonly KimiService $kimi) {}
+    public function __construct(
+        private readonly KimiService $kimi,
+        private readonly ChatImageStore $images,
+    ) {}
 
-    public function send(string $message): ChatTurnResult
+    public function send(string $message, ?UploadedFile $image = null): ChatTurnResult
     {
         if (session()->get(self::BLOCKED) === true) {
             $this->rememberError(__('chat.startup_blocked'));
@@ -35,26 +40,61 @@ class ChatService
             return $this->result();
         }
 
+        if ($message === '' && $image instanceof UploadedFile) {
+            $message = __('chat.image_default_prompt');
+        }
+
+        if ($message === '') {
+            $this->rememberError(__('chat.message_required'));
+
+            return $this->result();
+        }
+
         $transcript = $this->transcript();
-        $last = $transcript === [] ? null : $transcript[array_key_last($transcript)];
-        $reuse = is_array($last)
+        $lastIndex = $transcript === [] ? null : array_key_last($transcript);
+        $last = $lastIndex === null ? null : $transcript[$lastIndex];
+        $lastAttachment = is_array($last) ? $this->attachment($last) : null;
+        $sameText = is_array($last)
             && ($last['role'] ?? null) === 'user'
             && ($last['content'] ?? null) === $message;
 
-        if (! $reuse) {
-            $transcript[] = [
-                'role' => 'user',
-                'content' => $message,
-                'at' => now()->toIso8601String(),
-            ];
-            session()->put(self::TRANSCRIPT, $transcript);
+        try {
+            if ($sameText && $image === null && $lastAttachment === null) {
+                // The failed text is already the last turn.
+            } elseif ($sameText && $image instanceof UploadedFile) {
+                $stored = $this->images->store($image);
+
+                if ($lastAttachment !== null) {
+                    $this->images->delete($lastAttachment['id']);
+                }
+
+                $transcript[$lastIndex]['attachment'] = $stored;
+                session()->put(self::TRANSCRIPT, $transcript);
+            } else {
+                $turn = [
+                    'role' => 'user',
+                    'content' => $message,
+                    'at' => now()->toIso8601String(),
+                ];
+
+                if ($image instanceof UploadedFile) {
+                    $turn['attachment'] = $this->images->store($image);
+                }
+
+                $transcript[] = $turn;
+                session()->put(self::TRANSCRIPT, $transcript);
+            }
+        } catch (ImageStoreException $exception) {
+            $this->rememberError($exception->userMessage);
+
+            return $this->result();
         }
 
         session()->forget([self::ERROR, self::LATENCY, self::USAGE]);
 
         try {
             $job = $this->kimi->submit($this->outbound($transcript));
-        } catch (InferenceException $exception) {
+        } catch (ImageStoreException|InferenceException $exception) {
             $this->rememberError($exception->userMessage);
 
             return $this->result();
@@ -138,6 +178,8 @@ class ChatService
 
             return $this->result();
         }
+
+        $this->images->deleteSession();
 
         session()->forget([
             self::TRANSCRIPT,
@@ -264,15 +306,22 @@ class ChatService
 
     /**
      * @param  array<int, array<string, mixed>>  $transcript
-     * @return array<int, array{role: string, content: string}>
+     * @return array<int, array<string, mixed>>
      */
     private function outbound(array $transcript): array
     {
-        $cap = max(1, (int) config('kimi.context_messages'));
-        $messages = [[
+        $system = [
             'role' => 'system',
             'content' => $this->systemPrompt($transcript),
-        ]];
+        ];
+        $last = $transcript === [] ? null : $transcript[array_key_last($transcript)];
+
+        if (is_array($last) && ($last['role'] ?? null) === 'user' && $this->attachment($last) !== null) {
+            return [$system, $this->imageMessage($last)];
+        }
+
+        $cap = max(1, (int) config('kimi.context_messages'));
+        $messages = [$system];
 
         foreach (array_slice($transcript, -$cap) as $turn) {
             $messages[] = [
@@ -282,6 +331,55 @@ class ChatService
         }
 
         return $messages;
+    }
+
+    /**
+     * The image is sent only with the turn that uploaded it. Earlier turns
+     * stay in the transcript and are omitted here so the 2,048-token context
+     * can hold the image.
+     *
+     * @param  array<string, mixed>  $turn
+     * @return array{role: string, content: array<int, array<string, mixed>>}
+     */
+    private function imageMessage(array $turn): array
+    {
+        $attachment = $this->attachment($turn);
+
+        if ($attachment === null) {
+            throw new ImageStoreException(__('chat.image_missing'));
+        }
+
+        return [
+            'role' => 'user',
+            'content' => [
+                ['type' => 'text', 'text' => $turn['content']],
+                ['type' => 'image_url', 'image_url' => ['url' => $this->images->dataUrl($attachment['id'])]],
+            ],
+        ];
+    }
+
+    public function attachmentBytes(string $id): ?string
+    {
+        $known = false;
+
+        foreach ($this->transcript() as $turn) {
+            $attachment = $this->attachment($turn);
+
+            if ($attachment !== null && hash_equals($attachment['id'], $id)) {
+                $known = true;
+                break;
+            }
+        }
+
+        if (! $known) {
+            return null;
+        }
+
+        try {
+            return $this->images->read($id);
+        } catch (ImageStoreException) {
+            return null;
+        }
     }
 
     /**
@@ -381,6 +479,17 @@ class ChatService
                 $public['model'] = $turn['model'];
             }
 
+            $attachment = $this->attachment($turn);
+
+            if ($attachment !== null && $this->images->exists($attachment['id'])) {
+                $public['attachment'] = [
+                    'id' => $attachment['id'],
+                    'url' => route('chat.attachments.show', ['id' => $attachment['id']]),
+                    'width' => $attachment['width'],
+                    'height' => $attachment['height'],
+                ];
+            }
+
             return $public;
         }, $this->transcript());
     }
@@ -455,6 +564,47 @@ class ChatService
         session()->forget(self::PENDING);
     }
 
+    /**
+     * @param  array<string, mixed>  $turn
+     * @return array{id: string, bytes: int, width: int, height: int}|null
+     */
+    private function attachment(array $turn): ?array
+    {
+        $attachment = $turn['attachment'] ?? null;
+
+        if (! is_array($attachment)) {
+            return null;
+        }
+
+        $id = $attachment['id'] ?? null;
+        $bytes = $attachment['bytes'] ?? null;
+        $width = $attachment['width'] ?? null;
+        $height = $attachment['height'] ?? null;
+
+        if (! is_string($id) || preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/', $id) !== 1) {
+            return null;
+        }
+
+        if (! is_numeric($bytes) || ! is_numeric($width) || ! is_numeric($height)) {
+            return null;
+        }
+
+        $width = (int) $width;
+        $height = (int) $height;
+        $bytes = (int) $bytes;
+
+        if ($width < 1 || $height < 1 || $bytes < 1) {
+            return null;
+        }
+
+        return [
+            'id' => $id,
+            'bytes' => $bytes,
+            'width' => $width,
+            'height' => $height,
+        ];
+    }
+
     private function safeText(?string $message): ?string
     {
         if ($message === null) {
@@ -462,6 +612,8 @@ class ChatService
         }
 
         $clean = preg_replace('/Bearer\s+\S+/i', '[redacted]', $message);
+        $clean = is_string($clean) ? $clean : $message;
+        $clean = preg_replace('/data:image\\\\?\/[a-z0-9.+-]+;base64,[A-Za-z0-9+\/=\\\\]+/i', '[redacted]', $clean);
 
         return Str::limit(is_string($clean) ? $clean : $message, 300);
     }
