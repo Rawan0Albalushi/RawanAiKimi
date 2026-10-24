@@ -1,0 +1,90 @@
+# Laravel
+/vendor
+/node_modules
+/public/build
+/public/hot
+/public/storage
+/storage/*.key
+/storage/pail
+/storage/logs
+/storage/framework/cache/data
+/storage/framework/sessions
+/storage/framework/views
+/storage/framework/testing
+/bootstrap/cache
+/.phpunit.cache
+.phpunit.result.cache
+.phpactor.json
+Homestead.json
+Homestead.yaml
+auth.json
+
+# Environment and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.ppk
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+
+# Frontend
+npm-debug.log
+yarn-error.log
+pnpm-debug.log
+.vite
+*.local
+
+# Python, model weights, and local inference artifacts
+__pycache__/
+*.py[cod]
+.Python
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.safetensors
+*.gguf
+*.pt
+*.pth
+*.onnx
+*.ckpt
+/models/
+/weights/
+/hf-cache/
+/huggingface/
+.cache/
+
+# Logs and local run output
+*.log
+runpod.toml
+deployment/serverless/last-job-id.txt
+
+# Coverage
+/coverage
+/database/*.sqlite
+/database/*.sqlite-journal
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.stackdump
+*.lnk
+
+# Editors
+/.fleet
+/.idea
+/.nova
+/.vscode
+/.zed
+*.swp
+*~
+
+# OS
+.DS_Store

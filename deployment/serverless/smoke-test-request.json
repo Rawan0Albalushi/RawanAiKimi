@@ -1,0 +1,17 @@
+{
+  "input": {
+    "openai_route": "/v1/chat/completions",
+    "openai_input": {
+      "model": "kimi-vl",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Reply with one short sentence in English."
+        }
+      ],
+      "temperature": 0.2,
+      "max_tokens": 32,
+      "stream": false
+    }
+  }
+}

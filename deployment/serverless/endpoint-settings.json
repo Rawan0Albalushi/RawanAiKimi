@@ -1,0 +1,6 @@
+{
+  "name": "kimi-vl-a3b-instruct-poc",
+  "workersMin": 0,
+  "workersMax": 1,
+  "idleTimeout": 60
+}
