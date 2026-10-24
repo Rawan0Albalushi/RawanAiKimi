@@ -9,7 +9,7 @@ use Illuminate\Support\Str;
 
 class ChatImageStore
 {
-    public const SESSION_KEY = 'chat.images_key';
+    private const OWNER = '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/';
 
     private const ALLOWED_MIME_TYPES = [
         'image/jpeg',
@@ -20,13 +20,13 @@ class ChatImageStore
     /**
      * @return array{id: string, bytes: int, width: int, height: int}
      */
-    public function store(UploadedFile $file): array
+    public function store(UploadedFile $file, string $ownerId): array
     {
         $this->assertReadable($file);
         $encoded = $this->encode($file->getPathname());
         $id = (string) Str::uuid();
 
-        Storage::disk('local')->put($this->relativePath($id, create: true), $encoded['bytes']);
+        Storage::disk('local')->put($this->relativePath($ownerId, $id), $encoded['bytes']);
 
         return [
             'id' => $id,
@@ -36,9 +36,9 @@ class ChatImageStore
         ];
     }
 
-    public function read(string $id): string
+    public function read(string $ownerId, string $id): string
     {
-        $bytes = Storage::disk('local')->get($this->relativePath($id));
+        $bytes = Storage::disk('local')->get($this->relativePath($ownerId, $id));
 
         if (! is_string($bytes) || $bytes === '') {
             throw new ImageStoreException(__('chat.image_missing'));
@@ -47,39 +47,36 @@ class ChatImageStore
         return $bytes;
     }
 
-    public function dataUrl(string $id): string
+    public function dataUrl(string $ownerId, string $id): string
     {
-        return 'data:image/jpeg;base64,'.base64_encode($this->read($id));
+        return 'data:image/jpeg;base64,'.base64_encode($this->read($ownerId, $id));
     }
 
-    public function exists(string $id): bool
+    public function exists(string $ownerId, string $id): bool
     {
         try {
-            return Storage::disk('local')->exists($this->relativePath($id));
+            return Storage::disk('local')->exists($this->relativePath($ownerId, $id));
         } catch (ImageStoreException) {
             return false;
         }
     }
 
-    public function delete(string $id): void
+    public function delete(string $ownerId, string $id): void
     {
         try {
-            Storage::disk('local')->delete($this->relativePath($id));
+            Storage::disk('local')->delete($this->relativePath($ownerId, $id));
         } catch (ImageStoreException) {
             return;
         }
     }
 
-    public function deleteSession(): void
+    public function deleteOwner(string $ownerId): void
     {
-        $sessionId = $this->sessionKey();
-
-        if ($sessionId === null) {
+        if (preg_match(self::OWNER, $ownerId) !== 1) {
             return;
         }
 
-        Storage::disk('local')->deleteDirectory('chat-images/'.$sessionId);
-        session()->forget(self::SESSION_KEY);
+        Storage::disk('local')->deleteDirectory('chat-images/'.$ownerId);
     }
 
     public function prune(): int
@@ -194,41 +191,12 @@ class ChatImageStore
         ];
     }
 
-    private function relativePath(string $id, bool $create = false): string
+    private function relativePath(string $ownerId, string $id): string
     {
-        if (preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/', $id) !== 1) {
+        if (preg_match(self::OWNER, $ownerId) !== 1 || preg_match(self::OWNER, $id) !== 1) {
             throw new ImageStoreException(__('chat.image_invalid'));
         }
 
-        $sessionId = $create ? $this->requireSessionKey() : $this->sessionKey();
-
-        if ($sessionId === null) {
-            throw new ImageStoreException(__('chat.image_missing'));
-        }
-
-        return 'chat-images/'.$sessionId.'/'.$id.'.jpg';
-    }
-
-    private function requireSessionKey(): string
-    {
-        return $this->sessionKey(create: true) ?? throw new ImageStoreException(__('chat.image_invalid'));
-    }
-
-    private function sessionKey(bool $create = false): ?string
-    {
-        $existing = session()->get(self::SESSION_KEY);
-
-        if (is_string($existing) && preg_match('/^[A-Za-z0-9]{32}$/', $existing) === 1) {
-            return $existing;
-        }
-
-        if (! $create) {
-            return null;
-        }
-
-        $key = Str::random(32);
-        session()->put(self::SESSION_KEY, $key);
-
-        return $key;
+        return 'chat-images/'.$ownerId.'/'.$id.'.jpg';
     }
 }

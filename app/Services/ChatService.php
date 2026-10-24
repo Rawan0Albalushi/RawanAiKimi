@@ -13,8 +13,6 @@ use Illuminate\Support\Str;
 
 class ChatService
 {
-    private const TRANSCRIPT = 'chat.transcript';
-
     private const PENDING = 'chat.pending';
 
     private const ERROR = 'chat.error';
@@ -32,6 +30,7 @@ class ChatService
         private readonly ChatImageStore $images,
         private readonly ChatPdfStore $pdfs,
         private readonly DocumentUnderstandingService $documents,
+        private readonly ChatStore $chats,
     ) {}
 
     public function send(
@@ -73,7 +72,8 @@ class ChatService
             return $this->result();
         }
 
-        $transcript = $this->transcript();
+        $chatId = $this->chatId();
+        $transcript = $this->transcript($chatId);
         $lastIndex = $transcript === [] ? null : array_key_last($transcript);
         $last = $lastIndex === null ? null : $transcript[$lastIndex];
         $lastAttachment = is_array($last) ? $this->imageAttachment($last) : null;
@@ -85,14 +85,14 @@ class ChatService
             if ($sameText && $image === null && $lastAttachment === null) {
                 // The failed text is already the last turn.
             } elseif ($sameText && $image instanceof UploadedFile) {
-                $stored = $this->images->store($image);
+                $stored = $this->images->store($image, $chatId);
 
                 if ($lastAttachment !== null) {
-                    $this->images->delete($lastAttachment['id']);
+                    $this->images->delete($chatId, $lastAttachment['id']);
                 }
 
                 $transcript[$lastIndex]['attachment'] = $stored;
-                session()->put(self::TRANSCRIPT, $transcript);
+                $this->saveTranscript($transcript, $chatId);
             } else {
                 $turn = [
                     'role' => 'user',
@@ -101,11 +101,11 @@ class ChatService
                 ];
 
                 if ($image instanceof UploadedFile) {
-                    $turn['attachment'] = $this->images->store($image);
+                    $turn['attachment'] = $this->images->store($image, $chatId);
                 }
 
                 $transcript[] = $turn;
-                session()->put(self::TRANSCRIPT, $transcript);
+                $this->saveTranscript($transcript, $chatId);
             }
         } catch (ImageStoreException $exception) {
             $this->rememberError($exception->userMessage);
@@ -116,7 +116,7 @@ class ChatService
         session()->forget([self::ERROR, self::LATENCY, self::USAGE]);
 
         try {
-            $job = $this->kimi->submit($this->outbound($transcript));
+            $job = $this->kimi->submit($this->outbound($transcript, $chatId));
         } catch (ImageStoreException|InferenceException $exception) {
             $this->rememberError($exception->userMessage);
 
@@ -127,6 +127,7 @@ class ChatService
 
         session()->put(self::PENDING, [
             'job_id' => $job->id,
+            'chat_id' => $chatId,
             'submitted_at' => now()->valueOf(),
             'status' => $status,
             'message' => $this->statusMessage($status),
@@ -207,11 +208,7 @@ class ChatService
             return $this->result();
         }
 
-        $this->images->deleteSession();
-        $this->pdfs->deleteSession();
-
         session()->forget([
-            self::TRANSCRIPT,
             self::PENDING,
             self::ERROR,
             self::LATENCY,
@@ -219,6 +216,63 @@ class ChatService
             self::BLOCKED,
             self::PLAN,
         ]);
+        $this->chats->startNew();
+
+        return $this->result();
+    }
+
+    public function open(string $id): ChatTurnResult
+    {
+        if ($this->pending() !== null) {
+            $this->rememberError(__('chat.in_progress'));
+
+            return $this->result();
+        }
+
+        if (! $this->chats->open($id)) {
+            return $this->result();
+        }
+
+        session()->forget([self::ERROR, self::LATENCY, self::USAGE]);
+
+        return $this->result();
+    }
+
+    public function destroy(string $id): ChatTurnResult
+    {
+        if (! $this->chats->validId($id) || ! $this->chats->exists($id)) {
+            return $this->result();
+        }
+
+        $pending = $this->pending();
+        $pendingChat = is_array($pending) ? ($pending['chat_id'] ?? $this->chats->activeId()) : null;
+
+        if ($pending !== null && is_string($pendingChat) && hash_equals($pendingChat, $id)) {
+            if (! $this->tryCancel($pending['job_id'])) {
+                $this->rememberError(__('chat.cancel_failed'));
+
+                return $this->result();
+            }
+
+            $this->forgetPending();
+            $this->forgetDocumentPlan();
+        }
+
+        $wasActive = $this->chats->activeId() !== null && hash_equals((string) $this->chats->activeId(), $id);
+        $this->images->deleteOwner($id);
+        $this->pdfs->deleteOwner($id);
+        $this->chats->delete($id);
+
+        if ($wasActive) {
+            session()->forget([self::ERROR, self::LATENCY, self::USAGE]);
+            $remaining = $this->chats->list();
+
+            if ($remaining !== []) {
+                $this->chats->open($remaining[0]['id']);
+            } else {
+                $this->chats->startNew();
+            }
+        }
 
         return $this->result();
     }
@@ -281,7 +335,8 @@ class ChatService
     private function complete(array $pending, KimiCompletion $completion): ChatTurnResult
     {
         $latency = $this->elapsed($pending);
-        $transcript = $this->transcript();
+        $chatId = $this->chatId($pending);
+        $transcript = $this->transcript($chatId);
         $transcript[] = [
             'role' => 'assistant',
             'content' => $completion->content,
@@ -291,7 +346,7 @@ class ChatService
             'model' => $completion->model,
         ];
 
-        session()->put(self::TRANSCRIPT, $transcript);
+        $this->saveTranscript($transcript, $chatId);
         session()->put(self::LATENCY, $latency);
         session()->put(self::USAGE, $completion->usage);
         session()->forget(self::ERROR);
@@ -342,7 +397,7 @@ class ChatService
      * @param  array<int, array<string, mixed>>  $transcript
      * @return array<int, array<string, mixed>>
      */
-    private function outbound(array $transcript): array
+    private function outbound(array $transcript, string $chatId): array
     {
         $system = [
             'role' => 'system',
@@ -351,7 +406,7 @@ class ChatService
         $last = $transcript === [] ? null : $transcript[array_key_last($transcript)];
 
         if (is_array($last) && ($last['role'] ?? null) === 'user' && $this->imageAttachment($last) !== null) {
-            return [$system, $this->imageMessage($last)];
+            return [$system, $this->imageMessage($last, $chatId)];
         }
 
         $cap = max(1, (int) config('kimi.context_messages'));
@@ -375,7 +430,7 @@ class ChatService
      * @param  array<string, mixed>  $turn
      * @return array{role: string, content: array<int, array<string, mixed>>}
      */
-    private function imageMessage(array $turn): array
+    private function imageMessage(array $turn, string $chatId): array
     {
         $attachment = $this->imageAttachment($turn);
 
@@ -387,16 +442,22 @@ class ChatService
             'role' => 'user',
             'content' => [
                 ['type' => 'text', 'text' => $turn['content']],
-                ['type' => 'image_url', 'image_url' => ['url' => $this->images->dataUrl($attachment['id'])]],
+                ['type' => 'image_url', 'image_url' => ['url' => $this->images->dataUrl($chatId, $attachment['id'])]],
             ],
         ];
     }
 
     public function attachmentBytes(string $id): ?string
     {
+        $chatId = $this->chats->activeId();
+
+        if ($chatId === null) {
+            return null;
+        }
+
         $known = false;
 
-        foreach ($this->transcript() as $turn) {
+        foreach ($this->transcript($chatId) as $turn) {
             $attachment = $this->imageAttachment($turn);
 
             if ($attachment !== null && hash_equals($attachment['id'], $id)) {
@@ -410,7 +471,7 @@ class ChatService
         }
 
         try {
-            return $this->images->read($id);
+            return $this->images->read($chatId, $id);
         } catch (ImageStoreException) {
             return null;
         }
@@ -460,19 +521,37 @@ class ChatService
     /**
      * @return array<int, array<string, mixed>>
      */
-    private function transcript(): array
+    private function transcript(?string $chatId = null): array
     {
-        $rows = session()->get(self::TRANSCRIPT, []);
+        $id = $chatId ?? $this->chats->activeId();
 
-        if (! is_array($rows)) {
+        if ($id === null) {
             return [];
         }
 
-        return array_values(array_filter($rows, function (mixed $row): bool {
-            return is_array($row)
-                && in_array($row['role'] ?? null, ['user', 'assistant'], true)
-                && is_string($row['content'] ?? null);
-        }));
+        return $this->chats->messages($id);
+    }
+
+    /**
+     * @param  array<int, array<string, mixed>>  $transcript
+     */
+    private function saveTranscript(array $transcript, ?string $chatId = null): void
+    {
+        $this->chats->putMessages($chatId ?? $this->chats->ensureActive(), $transcript);
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $pending
+     */
+    private function chatId(?array $pending = null): string
+    {
+        $candidate = is_array($pending) ? ($pending['chat_id'] ?? null) : null;
+
+        if (is_string($candidate) && $this->chats->validId($candidate)) {
+            return $candidate;
+        }
+
+        return $this->chats->ensureActive();
     }
 
     /**
@@ -494,7 +573,9 @@ class ChatService
      */
     private function publicTranscript(): array
     {
-        return array_map(function (array $turn): array {
+        $chatId = $this->chats->activeId();
+
+        return array_map(function (array $turn) use ($chatId): array {
             $public = [
                 'role' => $turn['role'],
                 'content' => $turn['content'],
@@ -515,7 +596,7 @@ class ChatService
 
             $pdf = $this->pdfAttachment($turn);
 
-            if ($pdf !== null && $this->pdfs->exists($pdf['id'])) {
+            if ($chatId !== null && $pdf !== null && $this->pdfs->exists($chatId, $pdf['id'])) {
                 $public['attachment'] = [
                     'id' => $pdf['id'],
                     'kind' => 'pdf',
@@ -527,7 +608,7 @@ class ChatService
 
             $attachment = $this->imageAttachment($turn);
 
-            if ($attachment !== null && $this->images->exists($attachment['id'])) {
+            if ($chatId !== null && $attachment !== null && $this->images->exists($chatId, $attachment['id'])) {
                 $public['attachment'] = [
                     'id' => $attachment['id'],
                     'url' => route('chat.attachments.show', ['id' => $attachment['id']]),
@@ -573,6 +654,8 @@ class ChatService
             usage: is_array($usage) ? $usage : null,
             blocked: session()->get(self::BLOCKED) === true,
             configured: $this->kimi->isConfigured(),
+            chats: $this->chats->list(),
+            activeId: $this->chats->activeId(),
         );
     }
 
@@ -713,11 +796,13 @@ class ChatService
             return $this->result();
         }
 
+        $chatId = $this->chatId();
+
         try {
             if ($pdf instanceof UploadedFile) {
-                $stored = $this->pdfs->store($pdf);
+                $stored = $this->pdfs->store($pdf, $chatId);
             } else {
-                $existing = $this->pdfs->read(strtolower((string) $documentId));
+                $existing = $this->pdfs->read($chatId, strtolower((string) $documentId));
                 $stored = [
                     'id' => $existing->id,
                     'name' => $existing->name,
@@ -726,7 +811,7 @@ class ChatService
                 ];
             }
 
-            $extracted = $this->pdfs->read($stored['id']);
+            $extracted = $this->pdfs->read($chatId, $stored['id']);
         } catch (DocumentException $exception) {
             $this->rememberError($exception->userMessage);
 
@@ -777,7 +862,7 @@ class ChatService
         }
 
         try {
-            $extracted = $this->pdfs->read($plan->documentId);
+            $extracted = $this->pdfs->read($this->chatId($pending), $plan->documentId);
         } catch (DocumentException $exception) {
             $this->forgetPending();
             $this->forgetDocumentPlan();
@@ -830,6 +915,7 @@ class ChatService
         session()->put(self::PLAN, $plan->toSession());
         session()->put(self::PENDING, [
             'job_id' => $job->id,
+            'chat_id' => $this->chatId(),
             'submitted_at' => $now,
             'started_at' => $startedAt ?? $now,
             'status' => $status,
@@ -868,7 +954,7 @@ class ChatService
             'at' => now()->toIso8601String(),
             'attachment' => $attachment,
         ];
-        session()->put(self::TRANSCRIPT, $transcript);
+        $this->saveTranscript($transcript);
     }
 
     private function appendAssistant(string $content): void
@@ -879,7 +965,7 @@ class ChatService
             'content' => $content,
             'at' => now()->toIso8601String(),
         ];
-        session()->put(self::TRANSCRIPT, $transcript);
+        $this->saveTranscript($transcript);
     }
 
     /**

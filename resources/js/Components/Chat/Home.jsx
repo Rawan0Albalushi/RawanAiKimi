@@ -7,8 +7,6 @@ const suggestionOrder = [
     ['write', 'pen'],
 ];
 
-const starterOrder = ['explain', 'shorter', 'options', 'rewrite'];
-
 export function Home({ copy, onInsert }) {
     const suggestions = copy.suggestions ?? {};
 
@@ -38,29 +36,6 @@ export function Home({ copy, onInsert }) {
                     );
                 })}
             </div>
-        </div>
-    );
-}
-
-export function Starters({ copy, onInsert }) {
-    const starters = copy.starters ?? {};
-
-    return (
-        <div className="starters">
-            {starterOrder.map((id) => {
-                const item = starters[id];
-
-                if (!item) {
-                    return null;
-                }
-
-                return (
-                    <button key={id} type="button" className="starter" onClick={() => onInsert(item.prompt)}>
-                        <span>{item.label}</span>
-                        <Icon name="chevron" className="starter-arrow" />
-                    </button>
-                );
-            })}
         </div>
     );
 }

@@ -12,14 +12,14 @@ use JsonException;
 
 class ChatPdfStore
 {
-    public const SESSION_KEY = 'chat.pdfs_key';
+    private const OWNER = '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/';
 
     public function __construct(private readonly PdfTextExtractor $extractor) {}
 
     /**
      * @return array{id: string, name: string, bytes: int, pages: int}
      */
-    public function store(UploadedFile $file): array
+    public function store(UploadedFile $file, string $ownerId): array
     {
         $this->assertReadable($file);
         $bytes = file_get_contents($file->getPathname());
@@ -30,8 +30,8 @@ class ChatPdfStore
 
         $id = (string) Str::uuid();
         $name = $this->displayName($file);
-        $pdfPath = $this->relativePath($id, 'pdf', create: true);
-        $jsonPath = $this->relativePath($id, 'json');
+        $pdfPath = $this->relativePath($ownerId, $id, 'pdf');
+        $jsonPath = $this->relativePath($ownerId, $id, 'json');
         Storage::disk('local')->put($pdfPath, $bytes);
 
         try {
@@ -45,11 +45,11 @@ class ChatPdfStore
             ];
             Storage::disk('local')->put($jsonPath, json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
         } catch (DocumentException $exception) {
-            $this->delete($id);
+            $this->delete($ownerId, $id);
 
             throw $exception;
         } catch (JsonException) {
-            $this->delete($id);
+            $this->delete($ownerId, $id);
 
             throw new DocumentException(__('chat.pdf_corrupted'));
         }
@@ -62,10 +62,10 @@ class ChatPdfStore
         ];
     }
 
-    public function read(string $id): ExtractedDocument
+    public function read(string $ownerId, string $id): ExtractedDocument
     {
         try {
-            $raw = Storage::disk('local')->get($this->relativePath($id, 'json'));
+            $raw = Storage::disk('local')->get($this->relativePath($ownerId, $id, 'json'));
         } catch (DocumentException) {
             throw new DocumentException(__('chat.pdf_missing'));
         }
@@ -122,37 +122,34 @@ class ChatPdfStore
         return new ExtractedDocument($id, $name, $bytes, $pageCount, $cleanPages, $cleanEmpty);
     }
 
-    public function exists(string $id): bool
+    public function exists(string $ownerId, string $id): bool
     {
         try {
-            return Storage::disk('local')->exists($this->relativePath($id, 'pdf'));
+            return Storage::disk('local')->exists($this->relativePath($ownerId, $id, 'pdf'));
         } catch (DocumentException) {
             return false;
         }
     }
 
-    public function delete(string $id): void
+    public function delete(string $ownerId, string $id): void
     {
         try {
             Storage::disk('local')->delete([
-                $this->relativePath($id, 'pdf'),
-                $this->relativePath($id, 'json'),
+                $this->relativePath($ownerId, $id, 'pdf'),
+                $this->relativePath($ownerId, $id, 'json'),
             ]);
         } catch (DocumentException) {
             return;
         }
     }
 
-    public function deleteSession(): void
+    public function deleteOwner(string $ownerId): void
     {
-        $sessionId = $this->sessionKey();
-
-        if ($sessionId === null) {
+        if (preg_match(self::OWNER, $ownerId) !== 1) {
             return;
         }
 
-        Storage::disk('local')->deleteDirectory('chat-pdfs/'.$sessionId);
-        session()->forget(self::SESSION_KEY);
+        Storage::disk('local')->deleteDirectory('chat-pdfs/'.$ownerId);
     }
 
     public function prune(): int
@@ -239,9 +236,9 @@ class ChatPdfStore
         return Str::limit($name, 120, '');
     }
 
-    private function relativePath(string $id, string $extension, bool $create = false): string
+    private function relativePath(string $ownerId, string $id, string $extension): string
     {
-        if (preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/', $id) !== 1) {
+        if (preg_match(self::OWNER, $ownerId) !== 1 || preg_match(self::OWNER, $id) !== 1) {
             throw new DocumentException(__('chat.pdf_invalid'));
         }
 
@@ -249,35 +246,6 @@ class ChatPdfStore
             throw new DocumentException(__('chat.pdf_invalid'));
         }
 
-        $sessionId = $create ? $this->requireSessionKey() : $this->sessionKey();
-
-        if ($sessionId === null) {
-            throw new DocumentException(__('chat.pdf_missing'));
-        }
-
-        return 'chat-pdfs/'.$sessionId.'/'.$id.'.'.$extension;
-    }
-
-    private function requireSessionKey(): string
-    {
-        return $this->sessionKey(create: true) ?? throw new DocumentException(__('chat.pdf_invalid'));
-    }
-
-    private function sessionKey(bool $create = false): ?string
-    {
-        $existing = session()->get(self::SESSION_KEY);
-
-        if (is_string($existing) && preg_match('/^[A-Za-z0-9]{32}$/', $existing) === 1) {
-            return $existing;
-        }
-
-        if (! $create) {
-            return null;
-        }
-
-        $key = Str::random(32);
-        session()->put(self::SESSION_KEY, $key);
-
-        return $key;
+        return 'chat-pdfs/'.$ownerId.'/'.$id.'.'.$extension;
     }
 }

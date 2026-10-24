@@ -2,7 +2,7 @@ import { Head, router, useForm, usePage } from '@inertiajs/react';
 import { useEffect, useRef, useState } from 'react';
 import Composer from '../../Components/Chat/Composer';
 import { formatWhen } from '../../Components/Chat/format';
-import { Home, Starters } from '../../Components/Chat/Home';
+import { Home } from '../../Components/Chat/Home';
 import Icon, { Mark } from '../../Components/Chat/Icon';
 import JobStatus from '../../Components/Chat/JobStatus';
 import Transcript from '../../Components/Chat/Transcript';
@@ -20,6 +20,8 @@ export default function Index({
     maxPdfKilobytes,
     modelName,
     copy,
+    chats = [],
+    activeId = null,
 }) {
     const { locale } = usePage().props;
     const form = useForm({ message: '', image: null, pdf: null });
@@ -28,11 +30,9 @@ export default function Index({
     const polling = useRef(false);
     const [navOpen, setNavOpen] = useState(false);
     const [collapsed, setCollapsed] = useState(false);
-    const canClear = transcript.length > 0 || Boolean(pending) || blocked || Boolean(error);
     const empty = transcript.length === 0;
     const current = transcript.find((message) => message.role === 'user') ?? transcript[0];
     const currentTitle = excerpt(current?.content);
-    const currentWhen = formatWhen(current?.at, locale);
 
     useEffect(() => {
         document.documentElement.lang = locale === 'ar' ? 'ar' : 'en';
@@ -97,13 +97,33 @@ export default function Index({
     }
 
     function clearChat() {
-        if (!canClear) {
+        setNavOpen(false);
+        setActiveDocument(null);
+        router.post('/chat/clear', {}, { preserveScroll: true });
+    }
+
+    function openChat(id) {
+        if (!id || id === activeId || pending) {
             return;
         }
 
         setNavOpen(false);
         setActiveDocument(null);
-        router.post('/chat/clear', {}, { preserveScroll: true });
+        router.post(`/chat/${id}/open`, {}, { preserveScroll: true });
+    }
+
+    function deleteChat(id) {
+        if (!id || !window.confirm(copy.delete_confirm)) {
+            return;
+        }
+
+        setNavOpen(false);
+
+        if (id === activeId) {
+            setActiveDocument(null);
+        }
+
+        router.post(`/chat/${id}/delete`, {}, { preserveScroll: true });
     }
 
     function cancelReply() {
@@ -182,20 +202,46 @@ export default function Index({
                             <Icon name="chevron" className="icon-collapse" />
                         </button>
                     </div>
-                    <button type="button" className="new-chat" onClick={clearChat} disabled={!canClear}>
+                    <button type="button" className="new-chat" onClick={clearChat}>
                         <Icon name="message" />
                         <span>{copy.new_chat}</span>
                     </button>
-                    {currentTitle ? (
+                    {chats.length > 0 ? (
                         <div className="recent">
-                            <p className="recent-label">{copy.this_chat}</p>
-                            <div className="recent-item">
-                                <Icon name="message" />
-                                <span>
-                                    <span className="recent-title">{currentTitle}</span>
-                                    {currentWhen ? <span className="recent-when">{currentWhen}</span> : null}
-                                </span>
-                            </div>
+                            <p className="recent-label">{copy.recent_chats}</p>
+                            <ul className="recent-list">
+                                {chats.map((chat) => {
+                                    const title = excerpt(chat.title);
+                                    const when = formatWhen(chat.updatedAt, locale);
+                                    const active = chat.id === activeId;
+
+                                    return (
+                                        <li key={chat.id} className={active ? 'recent-row is-active' : 'recent-row'}>
+                                            <button
+                                                type="button"
+                                                className="recent-open"
+                                                aria-current={active ? 'true' : undefined}
+                                                disabled={active || Boolean(pending)}
+                                                onClick={() => openChat(chat.id)}
+                                            >
+                                                <Icon name="message" />
+                                                <span>
+                                                    <span className="recent-title">{title}</span>
+                                                    {when ? <span className="recent-when">{when}</span> : null}
+                                                </span>
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="recent-delete"
+                                                aria-label={copy.delete_chat}
+                                                onClick={() => deleteChat(chat.id)}
+                                            >
+                                                <Icon name="clear" />
+                                            </button>
+                                        </li>
+                                    );
+                                })}
+                            </ul>
                         </div>
                     ) : null}
                     <div className="sidebar-foot">
@@ -261,7 +307,6 @@ export default function Index({
                             onCancel={cancelReply}
                             onClearDocument={() => setActiveDocument(null)}
                         />
-                        {empty ? <Starters copy={copy} onInsert={insertPrompt} /> : null}
                     </div>
                 </div>
             </div>

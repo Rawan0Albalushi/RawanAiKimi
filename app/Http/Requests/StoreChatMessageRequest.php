@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Services\ChatStore;
 use Closure;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Http\UploadedFile;
@@ -131,7 +132,9 @@ class StoreChatMessageRequest extends FormRequest
                 }
 
                 $document = strtolower((string) $this->input('document'));
-                $transcript = $this->session()->get('chat.transcript', []);
+                $store = app(ChatStore::class);
+                $activeId = $store->activeId();
+                $transcript = $activeId === null ? [] : $store->messages($activeId);
                 $known = false;
 
                 if (is_array($transcript)) {

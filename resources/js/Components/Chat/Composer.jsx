@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { formatBytes } from './format';
 import Icon from './Icon';
 
@@ -41,6 +41,17 @@ export default function Composer({
             didFocus.current = true;
         }
     }, []);
+
+    useLayoutEffect(() => {
+        const field = inputRef.current;
+
+        if (!field) {
+            return;
+        }
+
+        field.style.height = 'auto';
+        field.style.height = `${field.scrollHeight}px`;
+    }, [form.data.message]);
 
     useEffect(() => () => {
         if (previewUrl) {
@@ -330,32 +341,30 @@ export default function Composer({
                             onChange={onFileChange}
                             disabled={locked}
                         />
-                        <button
-                            type="button"
-                            className="icon-button attach-image"
-                            aria-label={copy.attach_image}
-                            disabled={locked}
-                            onClick={() => fileRef.current?.click()}
-                        >
-                            <Icon name="image" />
-                        </button>
-                        <button
-                            type="button"
-                            className="icon-button attach-image"
-                            aria-label={copy.attach_pdf}
-                            disabled={locked}
-                            onClick={() => pdfRef.current?.click()}
-                        >
-                            <Icon name="document" />
-                        </button>
-                        <p className="chip">
-                            <Icon name="image" />
-                            <span>{copy.image_hint}</span>
-                        </p>
-                        <p className="chip">
-                            <Icon name="document" />
-                            <span>{copy.pdf_hint}</span>
-                        </p>
+                        <span className="icon-host">
+                            <button
+                                type="button"
+                                className="icon-button attach-image"
+                                aria-label={`${copy.attach_image}. ${copy.image_hint}`}
+                                disabled={locked}
+                                onClick={() => fileRef.current?.click()}
+                            >
+                                <Icon name="image" />
+                            </button>
+                            <span className="icon-hint" aria-hidden="true">{copy.image_hint}</span>
+                        </span>
+                        <span className="icon-host">
+                            <button
+                                type="button"
+                                className="icon-button attach-image"
+                                aria-label={`${copy.attach_pdf}. ${copy.pdf_hint}`}
+                                disabled={locked}
+                                onClick={() => pdfRef.current?.click()}
+                            >
+                                <Icon name="document" />
+                            </button>
+                            <span className="icon-hint" aria-hidden="true">{copy.pdf_hint}</span>
+                        </span>
                         <p className="chip chip-model">
                             <Icon name="model" />
                             <span>{modelName}</span>

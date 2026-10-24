@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Services\ChatStore;
 use Illuminate\Http\Client\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Log\Events\MessageLogged;
@@ -10,6 +11,7 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Inertia\Testing\AssertableInertia as Assert;
 use Tests\TestCase;
 
@@ -138,7 +140,7 @@ class ChatTest extends TestCase
             ->where('transcript.1.usage.total_tokens', 14)
             ->where('latencyMs', fn (mixed $latency): bool => is_int($latency) && $latency >= 0));
 
-        $this->assertNull(collect(session('chat.transcript'))->firstWhere('role', 'system'));
+        $this->assertNull(collect($this->chatTranscript())->firstWhere('role', 'system'));
     }
 
     public function test_a_one_element_output_array_is_accepted(): void
@@ -175,13 +177,16 @@ class ChatTest extends TestCase
         config(['kimi.context_messages' => 2]);
         $this->fakeCallback();
 
+        $id = (string) Str::uuid();
+        app(ChatStore::class)->putMessages($id, [
+            ['role' => 'user', 'content' => 'one', 'at' => '2026-10-22T00:00:00+04:00'],
+            ['role' => 'assistant', 'content' => 'two', 'at' => '2026-10-22T00:00:01+04:00'],
+            ['role' => 'user', 'content' => 'three', 'at' => '2026-10-22T00:00:02+04:00'],
+            ['role' => 'assistant', 'content' => 'four', 'at' => '2026-10-22T00:00:03+04:00'],
+        ]);
+
         $this->withSession([
-            'chat.transcript' => [
-                ['role' => 'user', 'content' => 'one', 'at' => '2026-10-22T00:00:00+04:00'],
-                ['role' => 'assistant', 'content' => 'two', 'at' => '2026-10-22T00:00:01+04:00'],
-                ['role' => 'user', 'content' => 'three', 'at' => '2026-10-22T00:00:02+04:00'],
-                ['role' => 'assistant', 'content' => 'four', 'at' => '2026-10-22T00:00:03+04:00'],
-            ],
+            ChatStore::ACTIVE => $id,
         ])->from('/')->post('/chat', ['message' => 'five']);
 
         $request = $this->lastRun();
@@ -572,11 +577,14 @@ class ChatTest extends TestCase
         Storage::fake('local');
         $this->fakeQueue();
 
+        $id = (string) Str::uuid();
+        app(ChatStore::class)->putMessages($id, [
+            ['role' => 'user', 'content' => 'earlier question', 'at' => '2026-10-22T00:00:00+04:00'],
+            ['role' => 'assistant', 'content' => 'earlier answer', 'at' => '2026-10-22T00:00:01+04:00'],
+        ]);
+
         $this->withSession([
-            'chat.transcript' => [
-                ['role' => 'user', 'content' => 'earlier question', 'at' => '2026-10-22T00:00:00+04:00'],
-                ['role' => 'assistant', 'content' => 'earlier answer', 'at' => '2026-10-22T00:00:01+04:00'],
-            ],
+            ChatStore::ACTIVE => $id,
         ])->from('/')->post('/chat', [
             'message' => 'What is in this picture?',
             'image' => $this->imageUpload(),
@@ -599,8 +607,8 @@ class ChatTest extends TestCase
         $this->assertStringNotContainsString('data:image', $session);
         $this->assertStringNotContainsString($imageUrl, $session);
 
-        $turns = session('chat.transcript');
-        $id = is_array($turns) ? ($turns[array_key_last($turns)]['attachment']['id'] ?? null) : null;
+        $turns = $this->chatTranscript();
+        $id = $turns === [] ? null : ($turns[array_key_last($turns)]['attachment']['id'] ?? null);
         $this->assertIsString($id);
 
         $this->get(route('chat.attachments.show', $id))
@@ -700,13 +708,119 @@ class ChatTest extends TestCase
         ]);
 
         $this->assertNotEmpty(Storage::disk('local')->allFiles('chat-images'));
+        $chatId = session(ChatStore::ACTIVE);
+        $this->assertIsString($chatId);
 
         $this->post('/chat/clear')->assertRedirect(route('chat.index'));
 
-        $this->assertSame([], Storage::disk('local')->allFiles('chat-images'));
+        $this->assertNotEmpty(Storage::disk('local')->allFiles('chat-images'));
         $this->get('/')->assertInertia(fn (Assert $page) => $page
             ->where('transcript', [])
-            ->where('pending', null));
+            ->where('pending', null)
+            ->has('chats', 1)
+            ->where('chats.0.id', $chatId));
+
+        $this->post(route('chat.delete', $chatId))->assertRedirect(route('chat.index'));
+
+        $this->assertSame([], Storage::disk('local')->allFiles('chat-images'));
+        Storage::disk('local')->assertMissing('chats/'.$chatId.'.json');
+    }
+
+    public function test_a_new_chat_keeps_the_previous_transcript_and_reopening_restores_it(): void
+    {
+        $this->fakeCallback();
+
+        $this->from('/')->post('/chat', ['message' => 'What is the capital of Oman?']);
+        $this->post('/chat/poll');
+        $first = session(ChatStore::ACTIVE);
+        $this->assertIsString($first);
+
+        $this->get('/')->assertInertia(fn (Assert $page) => $page
+            ->where('activeId', $first)
+            ->where('transcript.1.content', 'Recorded reply'));
+
+        $this->post('/chat/clear')->assertRedirect(route('chat.index'));
+
+        $this->get('/')->assertInertia(fn (Assert $page) => $page
+            ->where('transcript', [])
+            ->where('activeId', fn (mixed $id): bool => is_string($id) && $id !== $first)
+            ->has('chats', 1)
+            ->where('chats.0.id', $first)
+            ->where('chats.0.title', 'What is the capital of Oman?'));
+
+        $this->post(route('chat.open', $first))->assertRedirect(route('chat.index'));
+
+        $this->get('/')->assertInertia(fn (Assert $page) => $page
+            ->where('activeId', $first)
+            ->where('transcript.0.content', 'What is the capital of Oman?')
+            ->where('transcript.1.content', 'Recorded reply'));
+    }
+
+    public function test_opening_another_chat_is_refused_while_a_reply_is_in_flight(): void
+    {
+        $this->fakeQueue();
+        $this->from('/')->post('/chat', ['message' => 'Hello']);
+        $first = session(ChatStore::ACTIVE);
+        $this->assertIsString($first);
+
+        $other = (string) Str::uuid();
+        app(ChatStore::class)->putMessages($other, [
+            ['role' => 'user', 'content' => 'older', 'at' => '2026-10-22T00:00:00+04:00'],
+        ]);
+
+        $this->post(route('chat.open', $other))->assertRedirect(route('chat.index'));
+
+        $this->get('/')->assertInertia(fn (Assert $page) => $page
+            ->where('activeId', $first)
+            ->where('error', 'A reply is already in progress.')
+            ->where('transcript.0.content', 'Hello'));
+    }
+
+    public function test_deleting_one_chat_leaves_the_other_in_place(): void
+    {
+        $this->fakeCallback();
+
+        $this->from('/')->post('/chat', ['message' => 'First']);
+        $this->post('/chat/poll');
+        $first = session(ChatStore::ACTIVE);
+        $this->assertIsString($first);
+
+        $this->post('/chat/clear');
+        $this->from('/')->post('/chat', ['message' => 'Second']);
+        $this->post('/chat/poll');
+
+        $this->post(route('chat.delete', $first))->assertRedirect(route('chat.index'));
+
+        $this->get('/')->assertInertia(fn (Assert $page) => $page
+            ->has('chats', 1)
+            ->where('chats.0.title', 'Second')
+            ->where('transcript.0.content', 'Second'));
+
+        Storage::disk('local')->assertMissing('chats/'.$first.'.json');
+    }
+
+    public function test_an_image_stays_available_after_leaving_and_reopening_the_chat(): void
+    {
+        Storage::fake('local');
+        $this->fakeQueue();
+
+        $this->from('/')->post('/chat', [
+            'message' => 'Look',
+            'image' => $this->imageUpload(),
+        ]);
+
+        $chatId = session(ChatStore::ACTIVE);
+        $turns = $this->chatTranscript();
+        $imageId = $turns[array_key_last($turns)]['attachment']['id'] ?? null;
+        $this->assertIsString($chatId);
+        $this->assertIsString($imageId);
+
+        $this->post('/chat/clear');
+        $this->post(route('chat.open', $chatId))->assertRedirect(route('chat.index'));
+
+        $this->get(route('chat.attachments.show', $imageId))
+            ->assertOk()
+            ->assertHeader('content-type', 'image/jpeg');
     }
 
     public function test_an_echoed_image_payload_is_redacted_from_the_log(): void

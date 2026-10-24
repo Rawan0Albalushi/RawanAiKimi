@@ -11,4 +11,6 @@ Route::post('/chat', [ChatController::class, 'store'])->middleware('throttle:cha
 Route::post('/chat/poll', [ChatController::class, 'poll'])->middleware('throttle:chat-poll')->name('chat.poll');
 Route::post('/chat/cancel', [ChatController::class, 'cancel'])->name('chat.cancel');
 Route::post('/chat/clear', [ChatController::class, 'clear'])->name('chat.clear');
+Route::post('/chat/{id}/open', [ChatController::class, 'open'])->whereUuid('id')->name('chat.open');
+Route::post('/chat/{id}/delete', [ChatController::class, 'destroy'])->whereUuid('id')->name('chat.delete');
 Route::post('/locale', [ChatController::class, 'locale'])->name('locale.update');

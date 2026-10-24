@@ -2,7 +2,7 @@
 
 namespace Tests\Feature;
 
-use App\Services\ChatPdfStore;
+use App\Services\ChatStore;
 use Illuminate\Http\Client\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Collection;
@@ -54,7 +54,7 @@ class PdfChatTest extends TestCase
             ->where('transcript.0.attachment.pages', 2)
             ->missing('transcript.0.attachment.url'));
 
-        $id = session('chat.transcript.0.attachment.id');
+        $id = $this->chatTranscript()[0]['attachment']['id'] ?? null;
         $this->assertIsString($id);
         $this->get(route('chat.attachments.show', $id))->assertNotFound();
         Storage::disk('local')->assertExists($this->storedPdf($id));
@@ -171,7 +171,7 @@ class PdfChatTest extends TestCase
         ]);
         $this->post('/chat/poll');
 
-        $id = session('chat.transcript.0.attachment.id');
+        $id = $this->chatTranscript()[0]['attachment']['id'] ?? null;
         $this->assertIsString($id);
 
         $this->from('/')->post('/chat', [
@@ -313,7 +313,11 @@ class PdfChatTest extends TestCase
         ]);
 
         $this->assertNotEmpty(Storage::disk('local')->allFiles('chat-pdfs'));
+        $chatId = session(ChatStore::ACTIVE);
+        $this->assertIsString($chatId);
         $this->post('/chat/clear')->assertRedirect(route('chat.index'));
+        $this->assertNotEmpty(Storage::disk('local')->allFiles('chat-pdfs'));
+        $this->post(route('chat.delete', $chatId))->assertRedirect(route('chat.index'));
         $this->assertSame([], Storage::disk('local')->allFiles('chat-pdfs'));
 
         $old = 'chat-pdfs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/11111111-1111-4111-8111-111111111111.pdf';
@@ -348,10 +352,10 @@ class PdfChatTest extends TestCase
 
         foreach ($files as $path) {
             $this->assertDoesNotMatchRegularExpression('/secret|\.\./', $path);
-            $this->assertMatchesRegularExpression('#^chat-pdfs/[A-Za-z0-9]{32}/[0-9a-f-]{36}\.(pdf|json)$#', $path);
+            $this->assertMatchesRegularExpression('#^chat-pdfs/[0-9a-f-]{36}/[0-9a-f-]{36}\.(pdf|json)$#', $path);
         }
 
-        $this->assertSame('secret.pdf', session('chat.transcript.0.attachment.name'));
+        $this->assertSame('secret.pdf', $this->chatTranscript()[0]['attachment']['name'] ?? null);
         $this->assertNotSame(storage_path('app/public'), config('filesystems.disks.local.root'));
     }
 
@@ -432,7 +436,7 @@ class PdfChatTest extends TestCase
 
     private function storedPdf(string $id): string
     {
-        $key = session(ChatPdfStore::SESSION_KEY);
+        $key = session(ChatStore::ACTIVE);
         $this->assertIsString($key);
 
         return 'chat-pdfs/'.$key.'/'.$id.'.pdf';

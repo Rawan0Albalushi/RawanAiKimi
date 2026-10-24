@@ -75,6 +75,20 @@ class ChatController extends Controller
         return redirect()->route('chat.index');
     }
 
+    public function open(string $id): RedirectResponse
+    {
+        $this->chat->open($id);
+
+        return redirect()->route('chat.index');
+    }
+
+    public function destroy(string $id): RedirectResponse
+    {
+        $this->chat->destroy($id);
+
+        return redirect()->route('chat.index');
+    }
+
     public function locale(Request $request): RedirectResponse
     {
         $data = $request->validate([
