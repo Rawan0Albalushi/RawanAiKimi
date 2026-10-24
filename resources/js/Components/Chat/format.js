@@ -1,3 +1,25 @@
+export function formatBytes(bytes, copy) {
+    const size = Number(bytes);
+
+    if (!Number.isFinite(size) || size < 0) {
+        return '';
+    }
+
+    if (size < 1024) {
+        return `${Math.round(size)} B`;
+    }
+
+    const kilobytes = size / 1024;
+
+    if (kilobytes < 1024) {
+        const rounded = kilobytes < 10 ? kilobytes.toFixed(1) : String(Math.round(kilobytes));
+
+        return `${rounded} ${copy.size_kb}`;
+    }
+
+    return `${(kilobytes / 1024).toFixed(1)} ${copy.size_mb}`;
+}
+
 export function formatLatency(milliseconds, copy) {
     if (milliseconds >= 10000) {
         return `${Math.round(milliseconds / 1000)} ${copy.seconds}`;

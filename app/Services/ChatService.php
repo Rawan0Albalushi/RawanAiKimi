@@ -2,8 +2,12 @@
 
 namespace App\Services;
 
+use App\Exceptions\DocumentException;
 use App\Exceptions\ImageStoreException;
 use App\Exceptions\InferenceException;
+use App\Services\Documents\DocumentPlan;
+use App\Services\Documents\DocumentUnderstandingService;
+use App\Services\Documents\ExtractedDocument;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Str;
 
@@ -21,13 +25,22 @@ class ChatService
 
     private const BLOCKED = 'chat.blocked';
 
+    private const PLAN = 'chat.document_plan';
+
     public function __construct(
         private readonly KimiService $kimi,
         private readonly ChatImageStore $images,
+        private readonly ChatPdfStore $pdfs,
+        private readonly DocumentUnderstandingService $documents,
     ) {}
 
-    public function send(string $message, ?UploadedFile $image = null): ChatTurnResult
-    {
+    public function send(
+        string $message,
+        ?UploadedFile $image = null,
+        ?UploadedFile $pdf = null,
+        ?string $documentId = null,
+        ?string $intent = null,
+    ): ChatTurnResult {
         if (session()->get(self::BLOCKED) === true) {
             $this->rememberError(__('chat.startup_blocked'));
 
@@ -38,6 +51,16 @@ class ChatService
             $this->rememberError(__('chat.in_progress'));
 
             return $this->result();
+        }
+
+        if ($pdf instanceof UploadedFile || (is_string($documentId) && $documentId !== '')) {
+            if ($image instanceof UploadedFile) {
+                $this->rememberError(__('chat.pdf_and_image'));
+
+                return $this->result();
+            }
+
+            return $this->sendDocument($message, $pdf, $documentId, $intent);
         }
 
         if ($message === '' && $image instanceof UploadedFile) {
@@ -53,7 +76,7 @@ class ChatService
         $transcript = $this->transcript();
         $lastIndex = $transcript === [] ? null : array_key_last($transcript);
         $last = $lastIndex === null ? null : $transcript[$lastIndex];
-        $lastAttachment = is_array($last) ? $this->attachment($last) : null;
+        $lastAttachment = is_array($last) ? $this->imageAttachment($last) : null;
         $sameText = is_array($last)
             && ($last['role'] ?? null) === 'user'
             && ($last['content'] ?? null) === $message;
@@ -143,6 +166,10 @@ class ChatService
         }
 
         if ($update->successful && $update->completion instanceof KimiCompletion) {
+            if (($pending['document'] ?? false) === true) {
+                return $this->advanceDocument($pending, $update->completion);
+            }
+
             return $this->complete($pending, $update->completion);
         }
 
@@ -164,6 +191,7 @@ class ChatService
         }
 
         $this->forgetPending();
+        $this->forgetDocumentPlan();
         $this->rememberOutcome(__('chat.cancelled'), $this->elapsed($pending));
 
         return $this->result();
@@ -180,6 +208,7 @@ class ChatService
         }
 
         $this->images->deleteSession();
+        $this->pdfs->deleteSession();
 
         session()->forget([
             self::TRANSCRIPT,
@@ -188,6 +217,7 @@ class ChatService
             self::LATENCY,
             self::USAGE,
             self::BLOCKED,
+            self::PLAN,
         ]);
 
         return $this->result();
@@ -205,6 +235,7 @@ class ChatService
     {
         $cancelled = $this->tryCancel((string) $pending['job_id']);
         $this->forgetPending();
+        $this->forgetDocumentPlan();
         $this->rememberOutcome(
             $cancelled ? __('chat.wait_ended') : __('chat.wait_ended_cancel_failed'),
             $this->elapsed($pending),
@@ -220,6 +251,7 @@ class ChatService
     {
         if (! $exception->transient) {
             $this->forgetPending();
+            $this->forgetDocumentPlan();
             $this->rememberOutcome($exception->userMessage, $this->elapsed($pending));
 
             return $this->result();
@@ -230,6 +262,7 @@ class ChatService
         if ($failures >= (int) config('kimi.transport_attempts')) {
             $this->tryCancel((string) $pending['job_id']);
             $this->forgetPending();
+            $this->forgetDocumentPlan();
             $this->rememberOutcome(__('chat.transport_gave_up'), $this->elapsed($pending));
 
             return $this->result();
@@ -273,6 +306,7 @@ class ChatService
     private function failJob(array $pending, JobUpdate $update): ChatTurnResult
     {
         $this->forgetPending();
+        $this->forgetDocumentPlan();
 
         if ($update->errorType === 'startup_error') {
             session()->put(self::BLOCKED, true);
@@ -316,7 +350,7 @@ class ChatService
         ];
         $last = $transcript === [] ? null : $transcript[array_key_last($transcript)];
 
-        if (is_array($last) && ($last['role'] ?? null) === 'user' && $this->attachment($last) !== null) {
+        if (is_array($last) && ($last['role'] ?? null) === 'user' && $this->imageAttachment($last) !== null) {
             return [$system, $this->imageMessage($last)];
         }
 
@@ -343,7 +377,7 @@ class ChatService
      */
     private function imageMessage(array $turn): array
     {
-        $attachment = $this->attachment($turn);
+        $attachment = $this->imageAttachment($turn);
 
         if ($attachment === null) {
             throw new ImageStoreException(__('chat.image_missing'));
@@ -363,7 +397,7 @@ class ChatService
         $known = false;
 
         foreach ($this->transcript() as $turn) {
-            $attachment = $this->attachment($turn);
+            $attachment = $this->imageAttachment($turn);
 
             if ($attachment !== null && hash_equals($attachment['id'], $id)) {
                 $known = true;
@@ -479,7 +513,19 @@ class ChatService
                 $public['model'] = $turn['model'];
             }
 
-            $attachment = $this->attachment($turn);
+            $pdf = $this->pdfAttachment($turn);
+
+            if ($pdf !== null && $this->pdfs->exists($pdf['id'])) {
+                $public['attachment'] = [
+                    'id' => $pdf['id'],
+                    'kind' => 'pdf',
+                    'name' => $pdf['name'],
+                    'bytes' => $pdf['bytes'],
+                    'pages' => $pdf['pages'],
+                ];
+            }
+
+            $attachment = $this->imageAttachment($turn);
 
             if ($attachment !== null && $this->images->exists($attachment['id'])) {
                 $public['attachment'] = [
@@ -535,7 +581,11 @@ class ChatService
      */
     private function elapsed(array $pending): int
     {
-        return max(0, now()->valueOf() - (int) $pending['submitted_at']);
+        $started = is_numeric($pending['started_at'] ?? null)
+            ? (int) $pending['started_at']
+            : (int) $pending['submitted_at'];
+
+        return max(0, now()->valueOf() - $started);
     }
 
     private function statusMessage(string $status): string
@@ -568,11 +618,11 @@ class ChatService
      * @param  array<string, mixed>  $turn
      * @return array{id: string, bytes: int, width: int, height: int}|null
      */
-    private function attachment(array $turn): ?array
+    private function imageAttachment(array $turn): ?array
     {
         $attachment = $turn['attachment'] ?? null;
 
-        if (! is_array($attachment)) {
+        if (! is_array($attachment) || ($attachment['kind'] ?? null) === 'pdf') {
             return null;
         }
 
@@ -603,6 +653,257 @@ class ChatService
             'width' => $width,
             'height' => $height,
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $turn
+     * @return array{id: string, name: string, bytes: int, pages: int}|null
+     */
+    private function pdfAttachment(array $turn): ?array
+    {
+        $attachment = $turn['attachment'] ?? null;
+
+        if (! is_array($attachment) || ($attachment['kind'] ?? null) !== 'pdf') {
+            return null;
+        }
+
+        $id = $attachment['id'] ?? null;
+        $name = $attachment['name'] ?? null;
+        $bytes = $attachment['bytes'] ?? null;
+        $pages = $attachment['pages'] ?? null;
+
+        if (! is_string($id) || preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/', $id) !== 1) {
+            return null;
+        }
+
+        if (! is_string($name) || $name === '' || mb_strlen($name) > 120 || str_contains($name, '/') || str_contains($name, '\\')) {
+            return null;
+        }
+
+        if (! is_numeric($bytes) || ! is_numeric($pages)) {
+            return null;
+        }
+
+        $bytes = (int) $bytes;
+        $pages = (int) $pages;
+
+        if ($bytes < 1 || $pages < 1) {
+            return null;
+        }
+
+        return [
+            'id' => $id,
+            'name' => $name,
+            'bytes' => $bytes,
+            'pages' => $pages,
+        ];
+    }
+
+    private function sendDocument(string $message, ?UploadedFile $pdf, ?string $documentId, ?string $intent): ChatTurnResult
+    {
+        $intent = $intent === 'summarize' ? 'summarize' : 'question';
+
+        if (trim($message) === '' && $intent === 'summarize') {
+            $message = __('chat.pdf_summarize_prompt');
+        }
+
+        if (trim($message) === '') {
+            $this->rememberError(__('chat.message_required'));
+
+            return $this->result();
+        }
+
+        try {
+            if ($pdf instanceof UploadedFile) {
+                $stored = $this->pdfs->store($pdf);
+            } else {
+                $existing = $this->pdfs->read(strtolower((string) $documentId));
+                $stored = [
+                    'id' => $existing->id,
+                    'name' => $existing->name,
+                    'bytes' => $existing->bytes,
+                    'pages' => $existing->pageCount,
+                ];
+            }
+
+            $extracted = $this->pdfs->read($stored['id']);
+        } catch (DocumentException $exception) {
+            $this->rememberError($exception->userMessage);
+
+            return $this->result();
+        }
+
+        $this->rememberDocumentTurn($message, [
+            'kind' => 'pdf',
+            'id' => $stored['id'],
+            'name' => $stored['name'],
+            'bytes' => $stored['bytes'],
+            'pages' => $stored['pages'],
+        ]);
+
+        try {
+            $plan = $this->documents->plan($extracted, $intent, $message);
+        } catch (DocumentException $exception) {
+            $this->rememberError($exception->userMessage);
+
+            return $this->result();
+        }
+
+        session()->forget([self::ERROR, self::LATENCY, self::USAGE]);
+
+        if (is_string($plan->localReply) && $plan->localReply !== '') {
+            $this->appendAssistant($plan->localReply);
+            $this->forgetDocumentPlan();
+
+            return $this->result();
+        }
+
+        return $this->submitDocumentStage($plan, $extracted, $plan->cursor, null);
+    }
+
+    /**
+     * @param  array<string, mixed>  $pending
+     */
+    private function advanceDocument(array $pending, KimiCompletion $completion): ChatTurnResult
+    {
+        $plan = DocumentPlan::fromSession(is_array(session()->get(self::PLAN)) ? session()->get(self::PLAN) : []);
+
+        if ($plan === null) {
+            $this->forgetPending();
+            $this->forgetDocumentPlan();
+            $this->rememberOutcome(__('chat.pdf_interrupted'), $this->elapsed($pending));
+
+            return $this->result();
+        }
+
+        try {
+            $extracted = $this->pdfs->read($plan->documentId);
+        } catch (DocumentException $exception) {
+            $this->forgetPending();
+            $this->forgetDocumentPlan();
+            $this->rememberOutcome($exception->userMessage, $this->elapsed($pending));
+
+            return $this->result();
+        }
+
+        $lastStage = $plan->cursor >= count($plan->stages) - 1;
+
+        if ($lastStage) {
+            $this->forgetPending();
+            $this->forgetDocumentPlan();
+
+            return $this->complete($pending, new KimiCompletion(
+                content: $this->documents->finalize($plan, $completion->content),
+                usage: $completion->usage,
+                model: $completion->model,
+                finishReason: $completion->finishReason,
+            ));
+        }
+
+        $pages = $this->documents->stagePages($plan, $extracted, $plan->cursor);
+        $next = $plan->withPartial(Str::limit(trim($completion->content), 6000, ''), $pages);
+        $started = is_numeric($pending['started_at'] ?? null) ? (int) $pending['started_at'] : (int) $pending['submitted_at'];
+
+        return $this->submitDocumentStage($next, $extracted, $next->cursor, $started);
+    }
+
+    private function submitDocumentStage(DocumentPlan $plan, ExtractedDocument $document, int $stageIndex, ?int $startedAt): ChatTurnResult
+    {
+        try {
+            $job = $this->kimi->submit($this->documents->messages($plan, $document, $stageIndex));
+        } catch (DocumentException|InferenceException $exception) {
+            $this->forgetPending();
+            $this->forgetDocumentPlan();
+            $pages = $this->pagesAlreadyRead($plan);
+            $message = $pages === []
+                ? $exception->userMessage
+                : __('chat.pdf_stopped', ['pages' => $this->documents->formatPages($pages)]);
+            $this->rememberError($message);
+
+            return $this->result();
+        }
+
+        $now = now()->valueOf();
+        $total = count($plan->stages);
+        $status = $job->status === 'IN_PROGRESS' ? 'IN_PROGRESS' : 'IN_QUEUE';
+
+        session()->put(self::PLAN, $plan->toSession());
+        session()->put(self::PENDING, [
+            'job_id' => $job->id,
+            'submitted_at' => $now,
+            'started_at' => $startedAt ?? $now,
+            'status' => $status,
+            'message' => $total > 1
+                ? __('chat.pdf_reading', ['current' => $stageIndex + 1, 'total' => $total])
+                : $this->statusMessage($status),
+            'transport_failures' => 0,
+            'document' => true,
+        ]);
+
+        return $this->result();
+    }
+
+    /**
+     * @param  array{kind: string, id: string, name: string, bytes: int, pages: int}  $attachment
+     */
+    private function rememberDocumentTurn(string $message, array $attachment): void
+    {
+        $transcript = $this->transcript();
+        $lastIndex = $transcript === [] ? null : array_key_last($transcript);
+        $last = $lastIndex === null ? null : $transcript[$lastIndex];
+        $lastPdf = is_array($last) ? $this->pdfAttachment($last) : null;
+        $sameText = is_array($last)
+            && ($last['role'] ?? null) === 'user'
+            && ($last['content'] ?? null) === $message
+            && $lastPdf !== null
+            && hash_equals($lastPdf['id'], $attachment['id']);
+
+        if ($sameText) {
+            return;
+        }
+
+        $transcript[] = [
+            'role' => 'user',
+            'content' => $message,
+            'at' => now()->toIso8601String(),
+            'attachment' => $attachment,
+        ];
+        session()->put(self::TRANSCRIPT, $transcript);
+    }
+
+    private function appendAssistant(string $content): void
+    {
+        $transcript = $this->transcript();
+        $transcript[] = [
+            'role' => 'assistant',
+            'content' => $content,
+            'at' => now()->toIso8601String(),
+        ];
+        session()->put(self::TRANSCRIPT, $transcript);
+    }
+
+    /**
+     * @return array<int, int>
+     */
+    private function pagesAlreadyRead(DocumentPlan $plan): array
+    {
+        $pages = [];
+
+        foreach ($plan->partials as $partial) {
+            foreach ($partial['pages'] as $page) {
+                $pages[] = $page;
+            }
+        }
+
+        $pages = array_values(array_unique($pages));
+        sort($pages);
+
+        return $pages;
+    }
+
+    private function forgetDocumentPlan(): void
+    {
+        session()->forget(self::PLAN);
     }
 
     private function safeText(?string $message): ?string

@@ -74,4 +74,30 @@ return [
 
     'image_retention_minutes' => max(1, (int) env('KIMI_IMAGE_RETENTION_MINUTES', 180)),
 
+    /*
+    | These limits belong to the application. They mirror the worker context
+    | of 2,048 tokens. They do not change the RunPod endpoint or the model.
+    |
+    */
+
+    'max_model_len' => max(512, (int) env('KIMI_MAX_MODEL_LEN', 2048)),
+
+    'document_max_kilobytes' => max(1, (int) env('KIMI_DOCUMENT_MAX_KILOBYTES', 10240)),
+
+    'document_max_pages' => max(1, (int) env('KIMI_DOCUMENT_MAX_PAGES', 40)),
+
+    'document_max_characters' => max(1000, (int) env('KIMI_DOCUMENT_MAX_CHARACTERS', 200000)),
+
+    'document_max_chunks' => max(1, (int) env('KIMI_DOCUMENT_MAX_CHUNKS', 80)),
+
+    'document_max_requests' => max(1, (int) env('KIMI_DOCUMENT_MAX_REQUESTS', 8)),
+
+    'document_chunk_tokens' => max(64, (int) env('KIMI_DOCUMENT_CHUNK_TOKENS', 280)),
+
+    'document_partial_tokens' => max(32, (int) env('KIMI_DOCUMENT_PARTIAL_TOKENS', 160)),
+
+    'document_token_margin' => max(0, (int) env('KIMI_DOCUMENT_TOKEN_MARGIN', 48)),
+
+    'document_retention_minutes' => max(1, (int) env('KIMI_DOCUMENT_RETENTION_MINUTES', 180)),
+
 ];

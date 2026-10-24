@@ -25,8 +25,17 @@ class ChatController extends Controller
     {
         $message = $request->validated('message');
         $image = $request->file('image');
+        $pdf = $request->file('pdf');
+        $document = $request->validated('document');
+        $intent = $request->validated('intent');
 
-        $this->chat->send(is_string($message) ? $message : '', $image instanceof UploadedFile ? $image : null);
+        $this->chat->send(
+            is_string($message) ? $message : '',
+            $image instanceof UploadedFile ? $image : null,
+            $pdf instanceof UploadedFile ? $pdf : null,
+            is_string($document) ? strtolower($document) : null,
+            is_string($intent) ? $intent : null,
+        );
 
         return redirect()->route('chat.index');
     }
@@ -85,6 +94,7 @@ class ChatController extends Controller
             'pollIntervalMs' => (int) config('kimi.poll_interval_ms'),
             'maxCharacters' => 4000,
             'maxImageKilobytes' => (int) config('kimi.image_max_kilobytes'),
+            'maxPdfKilobytes' => (int) config('kimi.document_max_kilobytes'),
             'modelName' => (string) config('kimi.model'),
         ]);
     }

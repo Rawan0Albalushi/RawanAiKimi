@@ -17,11 +17,13 @@ export default function Index({
     pollIntervalMs,
     maxCharacters,
     maxImageKilobytes,
+    maxPdfKilobytes,
     modelName,
     copy,
 }) {
     const { locale } = usePage().props;
-    const form = useForm({ message: '', image: null });
+    const form = useForm({ message: '', image: null, pdf: null });
+    const [activeDocument, setActiveDocument] = useState(null);
     const endRef = useRef(null);
     const polling = useRef(false);
     const [navOpen, setNavOpen] = useState(false);
@@ -100,11 +102,42 @@ export default function Index({
         }
 
         setNavOpen(false);
+        setActiveDocument(null);
         router.post('/chat/clear', {}, { preserveScroll: true });
     }
 
     function cancelReply() {
         router.post('/chat/cancel', {}, { preserveScroll: true, preserveState: true });
+    }
+
+    function summarizeDocument(attachment) {
+        if (!attachment?.id || pending || blocked || !configured) {
+            return;
+        }
+
+        router.post('/chat', {
+            message: copy.pdf_summarize_prompt,
+            document: attachment.id,
+            intent: 'summarize',
+        }, { preserveScroll: true });
+    }
+
+    function askDocument(attachment) {
+        if (!attachment?.id) {
+            return;
+        }
+
+        setActiveDocument({
+            id: attachment.id,
+            name: attachment.name,
+            bytes: attachment.bytes,
+            pages: attachment.pages,
+        });
+        form.setData('image', null);
+        form.setData('pdf', null);
+        window.requestAnimationFrame(() => {
+            document.getElementById('message')?.focus();
+        });
     }
 
     function insertPrompt(text) {
@@ -193,7 +226,16 @@ export default function Index({
                         </div>
                     </header>
                     <div className={empty ? 'home' : 'thread'} aria-busy={pending ? 'true' : 'false'}>
-                        {empty ? <Home copy={copy} onInsert={insertPrompt} /> : <Transcript transcript={transcript} copy={copy} locale={locale} />}
+                        {empty ? <Home copy={copy} onInsert={insertPrompt} /> : (
+                            <Transcript
+                                transcript={transcript}
+                                copy={copy}
+                                locale={locale}
+                                busy={Boolean(pending) || blocked || !configured}
+                                onSummarize={summarizeDocument}
+                                onAsk={askDocument}
+                            />
+                        )}
                         {!empty ? <h1 className="visually-hidden">{copy.app_name}</h1> : null}
                         <div ref={endRef} />
                     </div>
@@ -211,10 +253,13 @@ export default function Index({
                             modelName={modelName}
                             maxCharacters={maxCharacters}
                             maxImageKilobytes={maxImageKilobytes}
+                            maxPdfKilobytes={maxPdfKilobytes}
+                            activeDocument={activeDocument}
                             pending={pending}
                             blocked={blocked}
                             configured={configured}
                             onCancel={cancelReply}
+                            onClearDocument={() => setActiveDocument(null)}
                         />
                         {empty ? <Starters copy={copy} onInsert={insertPrompt} /> : null}
                     </div>

@@ -1,7 +1,7 @@
-import { formatClock, formatLatency } from './format';
+import { formatBytes, formatClock, formatLatency } from './format';
 import Icon, { Mark } from './Icon';
 
-export default function Transcript({ transcript, copy, locale }) {
+export default function Transcript({ transcript, copy, locale, busy, onSummarize, onAsk }) {
     if (transcript.length === 0) {
         return (
             <div className="empty">
@@ -26,6 +26,33 @@ export default function Transcript({ transcript, copy, locale }) {
                     {clock ? <time dateTime={message.at}>{clock}</time> : null}
                 </header>
                 <p dir="auto">{message.content}</p>
+                {message.attachment?.kind === 'pdf' ? (
+                    <div className="turn-pdf">
+                        <div className="pdf-file">
+                            <Icon name="document" />
+                            <span className="pdf-copy">
+                                <span className="pdf-name">{message.attachment.name}</span>
+                                <span className="pdf-meta">
+                                    {formatBytes(message.attachment.bytes, copy)}
+                                    {' · '}
+                                    {message.attachment.pages === 1
+                                        ? copy.pdf_page
+                                        : copy.pdf_pages.replace(':count', String(message.attachment.pages))}
+                                </span>
+                            </span>
+                        </div>
+                        {message.role === 'user' ? (
+                            <div className="pdf-actions">
+                                <button type="button" className="button button-small" disabled={busy} onClick={() => onSummarize(message.attachment)}>
+                                    {copy.pdf_summarize}
+                                </button>
+                                <button type="button" className="button button-small" disabled={busy} onClick={() => onAsk(message.attachment)}>
+                                    {copy.pdf_ask}
+                                </button>
+                            </div>
+                        ) : null}
+                    </div>
+                ) : null}
                 {message.attachment?.url ? (
                     <img
                         className="turn-image"

@@ -654,6 +654,69 @@ a {
     border-radius: 12px;
 }
 
+.pdf-draft,
+.turn-pdf {
+    margin: 12px 12px 0;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-inline-start: 3px solid var(--wine);
+    border-radius: 14px;
+    background: var(--blush);
+}
+
+.turn-pdf {
+    margin: 8px 0 0;
+    background: #fff;
+}
+
+.pdf-file {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.pdf-file > .icon {
+    flex: none;
+    color: var(--wine);
+}
+
+.pdf-copy {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1;
+}
+
+.pdf-name,
+.pdf-meta {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.pdf-name {
+    font-weight: 600;
+}
+
+.pdf-meta {
+    color: var(--muted);
+    font-size: 0.8125rem;
+}
+
+.pdf-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.button-small {
+    min-height: 44px;
+    padding-inline: 12px;
+    font-size: 0.875rem;
+}
+
 .composer textarea {
     display: block;
     width: 100%;
@@ -1160,6 +1223,19 @@ a {
         min-height: 2.5rem;
         padding-top: 8px;
         padding-bottom: 0;
+    }
+
+    .pdf-actions .button {
+        flex: 1 1 12rem;
+    }
+
+    .pdf-draft,
+    .turn-pdf {
+        margin-inline: 0;
+    }
+
+    .pdf-draft {
+        margin: 10px 10px 0;
     }
 
     .starters {
