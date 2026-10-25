@@ -29,11 +29,13 @@ export default function Composer({
     const remaining = maxCharacters - form.data.message.length;
     const hasImage = form.data.image instanceof File;
     const hasPdf = form.data.pdf instanceof File;
-    const hasDocument = Boolean(activeDocument?.id) && !hasImage && !hasPdf;
+    const hasOffice = form.data.office instanceof File;
+    const hasDocument = Boolean(activeDocument?.id) && !hasImage && !hasPdf && !hasOffice;
     const locked = form.processing || Boolean(pending) || blocked || !configured;
     const sendDisabled = locked || (form.data.message.trim() === '' && !hasImage);
-    const canSummarize = !locked && (hasPdf || hasDocument);
-    const placeholder = hasPdf || hasDocument ? copy.pdf_ask_placeholder : copy.ask_placeholder;
+    const canSummarize = !locked && (hasPdf || hasOffice || hasDocument);
+    const attachedKind = hasOffice ? fileKind(form.data.office?.name) : (hasDocument ? activeDocument?.kind : 'pdf');
+    const placeholder = hasPdf || hasOffice || hasDocument ? copy.pdf_ask_placeholder : copy.ask_placeholder;
 
     useEffect(() => {
         if (!didFocus.current) {
@@ -63,7 +65,7 @@ export default function Composer({
         event.preventDefault();
         submitIntent.current = intent;
 
-        const summarizing = intent === 'summarize' && (hasPdf || hasDocument);
+        const summarizing = intent === 'summarize' && (hasPdf || hasOffice || hasDocument);
         const asking = form.data.message.trim() !== '' || hasImage;
 
         if (locked || (!summarizing && !asking)) {
@@ -89,9 +91,17 @@ export default function Composer({
                 };
             }
 
+            if (data.office instanceof File) {
+                return {
+                    message: text || (chosen === 'summarize' ? summarizePrompt(copy, fileKind(data.office.name)) : ''),
+                    office: data.office,
+                    intent: chosen,
+                };
+            }
+
             if (activeDocument?.id) {
                 return {
-                    message: text || (chosen === 'summarize' ? copy.pdf_summarize_prompt : ''),
+                    message: text || (chosen === 'summarize' ? summarizePrompt(copy, activeDocument.kind) : ''),
                     document: activeDocument.id,
                     intent: chosen,
                 };
@@ -104,9 +114,9 @@ export default function Composer({
             preserveScroll: true,
             onSuccess: (page) => {
                 if (!page.props.error) {
-                    const replacedDocument = form.data.pdf instanceof File;
+                    const replacedDocument = form.data.pdf instanceof File || form.data.office instanceof File;
 
-                    form.reset('message', 'image', 'pdf');
+                    form.reset('message', 'image', 'pdf', 'office');
                     clearPreview();
 
                     if (replacedDocument) {
@@ -149,7 +159,11 @@ export default function Composer({
             pdfRef.current.value = '';
         }
 
-        form.setData('pdf', null);
+        form.setData({
+            ...form.data,
+            pdf: null,
+            office: null,
+        });
     }
 
     function chooseFile(file) {
@@ -157,15 +171,17 @@ export default function Composer({
             return;
         }
 
-        const pdf = file.type === 'application/pdf' || (file.type === '' && file.name.toLowerCase().endsWith('.pdf'));
-        const image = ACCEPTED_TYPES.includes(file.type);
+        const kind = fileKind(file.name, file.type);
+        const pdf = kind === 'pdf';
+        const office = kind === 'docx' || kind === 'xlsx';
+        const image = kind === 'image';
 
-        if (!pdf && !image) {
+        if (!pdf && !office && !image) {
             setLocalError(copy.file_invalid);
             return;
         }
 
-        if (pdf && file.size > maxPdfKilobytes * 1024) {
+        if ((pdf || office) && file.size > maxPdfKilobytes * 1024) {
             setLocalError(copy.pdf_too_large.replace(':limit', String(Math.max(1, Math.round(maxPdfKilobytes / 1024)))));
             return;
         }
@@ -178,7 +194,7 @@ export default function Composer({
         setLocalError('');
         onClearDocument();
 
-        if (pdf) {
+        if (pdf || office) {
             if (previewUrl) {
                 URL.revokeObjectURL(previewUrl);
             }
@@ -187,7 +203,8 @@ export default function Composer({
             form.setData({
                 ...form.data,
                 image: null,
-                pdf: file,
+                pdf: pdf ? file : null,
+                office: office ? file : null,
             });
         } else {
             setPreviewUrl(URL.createObjectURL(file));
@@ -195,6 +212,7 @@ export default function Composer({
                 ...form.data,
                 image: file,
                 pdf: null,
+                office: null,
             });
         }
 
@@ -251,8 +269,9 @@ export default function Composer({
         chooseFile(files[0]);
     }
 
-    const attachmentError = localError || form.errors.image || form.errors.pdf || form.errors.document;
+    const attachmentError = localError || form.errors.image || form.errors.pdf || form.errors.office || form.errors.document;
     const pdfFile = hasPdf ? form.data.pdf : null;
+    const officeFile = hasOffice ? form.data.office : null;
 
     return (
         <form className="composer" id="composer" onSubmit={submit}>
@@ -271,11 +290,12 @@ export default function Composer({
                         </button>
                     </div>
                 ) : null}
-                {pdfFile ? (
+                {pdfFile || officeFile ? (
                     <PdfDraft
                         copy={copy}
-                        name={pdfFile.name}
-                        bytes={pdfFile.size}
+                        kind={pdfFile ? 'pdf' : fileKind(officeFile.name)}
+                        name={(pdfFile || officeFile).name}
+                        bytes={(pdfFile || officeFile).size}
                         status={form.processing ? copy.pdf_uploading : copy.pdf_ready}
                         onRemove={removePdf}
                         onSummarize={(event) => submit(event, 'summarize')}
@@ -285,6 +305,7 @@ export default function Composer({
                 {hasDocument ? (
                     <PdfDraft
                         copy={copy}
+                        kind={attachedKind}
                         name={activeDocument.name}
                         bytes={activeDocument.bytes}
                         pages={activeDocument.pages}
@@ -336,7 +357,7 @@ export default function Composer({
                             id="pdf"
                             name="pdf"
                             type="file"
-                            accept="application/pdf,.pdf"
+                            accept="application/pdf,.pdf,.docx,.xlsx,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                             tabIndex={-1}
                             onChange={onFileChange}
                             disabled={locked}
@@ -394,12 +415,65 @@ export default function Composer({
     );
 }
 
-function PdfDraft({ copy, name, bytes, pages, status, onRemove, onSummarize, summarizeDisabled }) {
-    const pageLabel = Number(pages) === 1
-        ? copy.pdf_page
-        : Number(pages) > 1
-            ? copy.pdf_pages.replace(':count', String(pages))
-            : '';
+function fileKind(name = '', type = '') {
+    const lower = String(name).toLowerCase();
+
+    if (lower.endsWith('.xlsx')) {
+        return 'xlsx';
+    }
+
+    if (lower.endsWith('.docx')) {
+        return 'docx';
+    }
+
+    if (type === 'application/pdf' || lower.endsWith('.pdf')) {
+        return 'pdf';
+    }
+
+    if (ACCEPTED_TYPES.includes(type) || /\.(jpe?g|png|webp)$/.test(lower)) {
+        return 'image';
+    }
+
+    return '';
+}
+
+function summarizePrompt(copy, kind) {
+    if (kind === 'xlsx') {
+        return copy.office_summarize_prompt_sheet;
+    }
+
+    if (kind === 'docx') {
+        return copy.office_summarize_prompt_word;
+    }
+
+    return copy.pdf_summarize_prompt;
+}
+
+function partLabel(copy, kind, pages) {
+    const count = Number(pages);
+
+    if (!count) {
+        return '';
+    }
+
+    if (kind === 'xlsx') {
+        return count === 1 ? copy.office_sheet : copy.office_sheets.replace(':count', String(count));
+    }
+
+    if (kind === 'docx') {
+        return count === 1 ? copy.office_section : copy.office_sections.replace(':count', String(count));
+    }
+
+    return count === 1 ? copy.pdf_page : copy.pdf_pages.replace(':count', String(count));
+}
+
+function PdfDraft({ copy, kind = 'pdf', name, bytes, pages, status, onRemove, onSummarize, summarizeDisabled }) {
+    const pageLabel = partLabel(copy, kind, pages);
+    const summarizeLabel = kind === 'xlsx'
+        ? copy.office_summarize_sheet
+        : kind === 'docx'
+            ? copy.office_summarize_word
+            : copy.pdf_summarize;
 
     return (
         <div className="pdf-draft">
@@ -419,7 +493,7 @@ function PdfDraft({ copy, name, bytes, pages, status, onRemove, onSummarize, sum
             </div>
             <div className="pdf-actions">
                 <button type="button" className="button button-small" onClick={onSummarize} disabled={summarizeDisabled}>
-                    {copy.pdf_summarize}
+                    {summarizeLabel}
                 </button>
             </div>
         </div>

@@ -24,7 +24,7 @@ class HandleInertiaRequests extends Middleware
     {
         return [
             ...parent::share($request),
-            'locale' => app()->getLocale(),
+            'locale' => fn () => SetLocale::preferred($request),
         ];
     }
 }

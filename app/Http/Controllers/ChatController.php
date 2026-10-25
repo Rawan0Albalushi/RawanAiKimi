@@ -2,12 +2,15 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Middleware\SetLocale;
 use App\Http\Requests\StoreChatMessageRequest;
 use App\Services\ChatService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response as HttpResponse;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\App;
+use Illuminate\Support\Facades\Cookie;
 use Illuminate\Support\Facades\Lang;
 use Inertia\Inertia;
 use Inertia\Response;
@@ -26,6 +29,7 @@ class ChatController extends Controller
         $message = $request->validated('message');
         $image = $request->file('image');
         $pdf = $request->file('pdf');
+        $office = $request->file('office');
         $document = $request->validated('document');
         $intent = $request->validated('intent');
 
@@ -35,6 +39,7 @@ class ChatController extends Controller
             $pdf instanceof UploadedFile ? $pdf : null,
             is_string($document) ? strtolower($document) : null,
             is_string($intent) ? $intent : null,
+            $office instanceof UploadedFile ? $office : null,
         );
 
         return redirect()->route('chat.index');
@@ -96,12 +101,15 @@ class ChatController extends Controller
         ]);
 
         $request->session()->put('locale', $data['locale']);
+        Cookie::queue(cookie(SetLocale::COOKIE, $data['locale'], SetLocale::MINUTES, null, null, null, false));
 
         return redirect()->route('chat.index');
     }
 
     private function page(): Response
     {
+        App::setLocale(SetLocale::preferred(request()));
+
         return Inertia::render('Chat/Index', [
             ...$this->chat->state()->toArray(),
             'copy' => Lang::get('chat'),

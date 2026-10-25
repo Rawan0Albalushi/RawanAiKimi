@@ -100,4 +100,10 @@ return [
 
     'document_retention_minutes' => max(1, (int) env('KIMI_DOCUMENT_RETENTION_MINUTES', 180)),
 
+    'document_max_rows' => max(1, (int) env('KIMI_DOCUMENT_MAX_ROWS', 400)),
+
+    'document_max_columns' => max(1, (int) env('KIMI_DOCUMENT_MAX_COLUMNS', 30)),
+
+    'document_max_uncompressed_kilobytes' => max(1, (int) env('KIMI_DOCUMENT_MAX_UNCOMPRESSED_KILOBYTES', 32768)),
+
 ];

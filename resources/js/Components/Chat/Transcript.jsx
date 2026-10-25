@@ -1,6 +1,20 @@
 import { formatBytes, formatClock, formatLatency } from './format';
 import Icon, { Mark } from './Icon';
 
+function partLabel(copy, kind, pages) {
+    const count = Number(pages);
+
+    if (kind === 'xlsx') {
+        return count === 1 ? copy.office_sheet : copy.office_sheets.replace(':count', String(count));
+    }
+
+    if (kind === 'docx') {
+        return count === 1 ? copy.office_section : copy.office_sections.replace(':count', String(count));
+    }
+
+    return count === 1 ? copy.pdf_page : copy.pdf_pages.replace(':count', String(count));
+}
+
 export default function Transcript({ transcript, copy, locale, busy, onSummarize, onAsk }) {
     if (transcript.length === 0) {
         return (
@@ -26,7 +40,7 @@ export default function Transcript({ transcript, copy, locale, busy, onSummarize
                     {clock ? <time dateTime={message.at}>{clock}</time> : null}
                 </header>
                 <p dir="auto">{message.content}</p>
-                {message.attachment?.kind === 'pdf' ? (
+                {['pdf', 'docx', 'xlsx'].includes(message.attachment?.kind) ? (
                     <div className="turn-pdf">
                         <div className="pdf-file">
                             <Icon name="document" />
@@ -35,16 +49,18 @@ export default function Transcript({ transcript, copy, locale, busy, onSummarize
                                 <span className="pdf-meta">
                                     {formatBytes(message.attachment.bytes, copy)}
                                     {' · '}
-                                    {message.attachment.pages === 1
-                                        ? copy.pdf_page
-                                        : copy.pdf_pages.replace(':count', String(message.attachment.pages))}
+                                    {partLabel(copy, message.attachment.kind, message.attachment.pages)}
                                 </span>
                             </span>
                         </div>
                         {message.role === 'user' ? (
                             <div className="pdf-actions">
                                 <button type="button" className="button button-small" disabled={busy} onClick={() => onSummarize(message.attachment)}>
-                                    {copy.pdf_summarize}
+                                    {message.attachment.kind === 'xlsx'
+                                        ? copy.office_summarize_sheet
+                                        : message.attachment.kind === 'docx'
+                                            ? copy.office_summarize_word
+                                            : copy.pdf_summarize}
                                 </button>
                                 <button type="button" className="button button-small" disabled={busy} onClick={() => onAsk(message.attachment)}>
                                     {copy.pdf_ask}

@@ -24,7 +24,7 @@ export default function Index({
     activeId = null,
 }) {
     const { locale } = usePage().props;
-    const form = useForm({ message: '', image: null, pdf: null });
+    const form = useForm({ message: '', image: null, pdf: null, office: null });
     const [activeDocument, setActiveDocument] = useState(null);
     const endRef = useRef(null);
     const polling = useRef(false);
@@ -35,8 +35,13 @@ export default function Index({
     const currentTitle = excerpt(current?.content);
 
     useEffect(() => {
-        document.documentElement.lang = locale === 'ar' ? 'ar' : 'en';
-        document.documentElement.dir = locale === 'ar' ? 'rtl' : 'ltr';
+        const next = locale === 'ar' ? 'ar' : 'en';
+        document.documentElement.lang = next;
+        document.documentElement.dir = next === 'ar' ? 'rtl' : 'ltr';
+
+        if (locale === 'ar' || locale === 'en') {
+            document.cookie = `locale=${locale}; Max-Age=34560000; Path=/; SameSite=Lax`;
+        }
     }, [locale]);
 
     useEffect(() => {
@@ -135,8 +140,14 @@ export default function Index({
             return;
         }
 
+        const prompt = attachment.kind === 'xlsx'
+            ? copy.office_summarize_prompt_sheet
+            : attachment.kind === 'docx'
+                ? copy.office_summarize_prompt_word
+                : copy.pdf_summarize_prompt;
+
         router.post('/chat', {
-            message: copy.pdf_summarize_prompt,
+            message: prompt,
             document: attachment.id,
             intent: 'summarize',
         }, { preserveScroll: true });
@@ -149,12 +160,14 @@ export default function Index({
 
         setActiveDocument({
             id: attachment.id,
+            kind: attachment.kind,
             name: attachment.name,
             bytes: attachment.bytes,
             pages: attachment.pages,
         });
         form.setData('image', null);
         form.setData('pdf', null);
+        form.setData('office', null);
         window.requestAnimationFrame(() => {
             document.getElementById('message')?.focus();
         });

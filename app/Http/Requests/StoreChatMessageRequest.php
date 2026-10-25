@@ -53,13 +53,43 @@ class StoreChatMessageRequest extends FormRequest
                     }
 
                     $summarizing = $this->input('intent') === 'summarize'
-                        && ($this->hasFile('pdf') || $this->filled('document'));
+                        && ($this->hasFile('pdf') || $this->hasFile('office') || $this->filled('document'));
 
                     return ! $summarizing;
                 }),
             ],
             'intent' => ['nullable', 'in:summarize,question'],
             'document' => ['nullable', 'uuid'],
+            'office' => [
+                'nullable',
+                'file',
+                'max:'.$pdfKilobytes,
+                function (string $attribute, mixed $value, Closure $fail): void {
+                    if (! $value instanceof UploadedFile || ! $value->isValid()) {
+                        return;
+                    }
+
+                    $name = strtolower(basename(str_replace('\\', '/', $value->getClientOriginalName())));
+
+                    if (! str_ends_with($name, '.docx') && ! str_ends_with($name, '.xlsx')) {
+                        $fail(__('chat.office_invalid'));
+
+                        return;
+                    }
+
+                    $path = $value->getPathname();
+                    $handle = fopen($path, 'rb');
+                    $magic = $handle === false ? '' : (string) fread($handle, 4);
+
+                    if (is_resource($handle)) {
+                        fclose($handle);
+                    }
+
+                    if ($magic !== "PK\x03\x04") {
+                        $fail(__('chat.office_invalid'));
+                    }
+                },
+            ],
             'pdf' => [
                 'nullable',
                 'file',
@@ -119,10 +149,11 @@ class StoreChatMessageRequest extends FormRequest
     {
         return [
             function (Validator $validator): void {
-                $sources = (int) $this->hasFile('image') + (int) $this->hasFile('pdf') + (int) $this->filled('document');
+                $sources = (int) $this->hasFile('image') + (int) $this->hasFile('pdf') + (int) $this->hasFile('office') + (int) $this->filled('document');
 
                 if ($sources > 1) {
-                    $validator->errors()->add('pdf', __('chat.pdf_and_image'));
+                    $field = $this->hasFile('office') ? 'office' : 'pdf';
+                    $validator->errors()->add($field, __('chat.pdf_and_image'));
 
                     return;
                 }
@@ -141,7 +172,7 @@ class StoreChatMessageRequest extends FormRequest
                     foreach ($transcript as $turn) {
                         $attachment = is_array($turn) ? ($turn['attachment'] ?? null) : null;
 
-                        if (! is_array($attachment) || ($attachment['kind'] ?? null) !== 'pdf' || ! is_string($attachment['id'] ?? null)) {
+                        if (! is_array($attachment) || ! in_array($attachment['kind'] ?? null, ['pdf', 'docx', 'xlsx'], true) || ! is_string($attachment['id'] ?? null)) {
                             continue;
                         }
 
@@ -176,6 +207,8 @@ class StoreChatMessageRequest extends FormRequest
             'pdf.file' => __('chat.pdf_invalid'),
             'pdf.mimes' => __('chat.pdf_invalid'),
             'pdf.max' => __('chat.pdf_too_large', ['limit' => $pdfLimit]),
+            'office.file' => __('chat.office_invalid'),
+            'office.max' => __('chat.office_too_large', ['limit' => $pdfLimit]),
             'document.uuid' => __('chat.pdf_missing'),
             'intent.in' => __('chat.message_required'),
         ];

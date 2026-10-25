@@ -29,6 +29,7 @@ class ChatService
         private readonly KimiService $kimi,
         private readonly ChatImageStore $images,
         private readonly ChatPdfStore $pdfs,
+        private readonly ChatOfficeStore $office,
         private readonly DocumentUnderstandingService $documents,
         private readonly ChatStore $chats,
     ) {}
@@ -39,6 +40,7 @@ class ChatService
         ?UploadedFile $pdf = null,
         ?string $documentId = null,
         ?string $intent = null,
+        ?UploadedFile $office = null,
     ): ChatTurnResult {
         if (session()->get(self::BLOCKED) === true) {
             $this->rememberError(__('chat.startup_blocked'));
@@ -52,14 +54,14 @@ class ChatService
             return $this->result();
         }
 
-        if ($pdf instanceof UploadedFile || (is_string($documentId) && $documentId !== '')) {
-            if ($image instanceof UploadedFile) {
+        if ($pdf instanceof UploadedFile || $office instanceof UploadedFile || (is_string($documentId) && $documentId !== '')) {
+            if ($image instanceof UploadedFile || ($pdf instanceof UploadedFile && $office instanceof UploadedFile)) {
                 $this->rememberError(__('chat.pdf_and_image'));
 
                 return $this->result();
             }
 
-            return $this->sendDocument($message, $pdf, $documentId, $intent);
+            return $this->sendDocument($message, $pdf, $documentId, $intent, $office);
         }
 
         if ($message === '' && $image instanceof UploadedFile) {
@@ -261,6 +263,7 @@ class ChatService
         $wasActive = $this->chats->activeId() !== null && hash_equals((string) $this->chats->activeId(), $id);
         $this->images->deleteOwner($id);
         $this->pdfs->deleteOwner($id);
+        $this->office->deleteOwner($id);
         $this->chats->delete($id);
 
         if ($wasActive) {
@@ -594,15 +597,20 @@ class ChatService
                 $public['model'] = $turn['model'];
             }
 
-            $pdf = $this->pdfAttachment($turn);
+            $document = $this->documentAttachment($turn);
+            $stored = $document !== null && $chatId !== null && (
+                $document['kind'] === 'pdf'
+                    ? $this->pdfs->exists($chatId, $document['id'])
+                    : $this->office->exists($chatId, $document['id'])
+            );
 
-            if ($chatId !== null && $pdf !== null && $this->pdfs->exists($chatId, $pdf['id'])) {
+            if ($stored && $document !== null) {
                 $public['attachment'] = [
-                    'id' => $pdf['id'],
-                    'kind' => 'pdf',
-                    'name' => $pdf['name'],
-                    'bytes' => $pdf['bytes'],
-                    'pages' => $pdf['pages'],
+                    'id' => $document['id'],
+                    'kind' => $document['kind'],
+                    'name' => $document['name'],
+                    'bytes' => $document['bytes'],
+                    'pages' => $document['pages'],
                 ];
             }
 
@@ -705,7 +713,7 @@ class ChatService
     {
         $attachment = $turn['attachment'] ?? null;
 
-        if (! is_array($attachment) || ($attachment['kind'] ?? null) === 'pdf') {
+        if (! is_array($attachment) || in_array($attachment['kind'] ?? null, ['pdf', 'docx', 'xlsx'], true)) {
             return null;
         }
 
@@ -740,13 +748,13 @@ class ChatService
 
     /**
      * @param  array<string, mixed>  $turn
-     * @return array{id: string, name: string, bytes: int, pages: int}|null
+     * @return array{id: string, kind: string, name: string, bytes: int, pages: int}|null
      */
-    private function pdfAttachment(array $turn): ?array
+    private function documentAttachment(array $turn): ?array
     {
         $attachment = $turn['attachment'] ?? null;
 
-        if (! is_array($attachment) || ($attachment['kind'] ?? null) !== 'pdf') {
+        if (! is_array($attachment) || ! in_array($attachment['kind'] ?? null, ['pdf', 'docx', 'xlsx'], true)) {
             return null;
         }
 
@@ -776,42 +784,59 @@ class ChatService
 
         return [
             'id' => $id,
+            'kind' => $attachment['kind'],
             'name' => $name,
             'bytes' => $bytes,
             'pages' => $pages,
         ];
     }
 
-    private function sendDocument(string $message, ?UploadedFile $pdf, ?string $documentId, ?string $intent): ChatTurnResult
+    private function sendDocument(string $message, ?UploadedFile $pdf, ?string $documentId, ?string $intent, ?UploadedFile $office = null): ChatTurnResult
     {
         $intent = $intent === 'summarize' ? 'summarize' : 'question';
-
-        if (trim($message) === '' && $intent === 'summarize') {
-            $message = __('chat.pdf_summarize_prompt');
-        }
-
-        if (trim($message) === '') {
-            $this->rememberError(__('chat.message_required'));
-
-            return $this->result();
-        }
-
         $chatId = $this->chatId();
 
         try {
             if ($pdf instanceof UploadedFile) {
                 $stored = $this->pdfs->store($pdf, $chatId);
+                $kind = 'pdf';
+                $source = 'pdf';
+            } elseif ($office instanceof UploadedFile) {
+                $stored = $this->office->store($office, $chatId);
+                $kind = $stored['kind'];
+                $source = 'office';
             } else {
-                $existing = $this->pdfs->read($chatId, strtolower((string) $documentId));
+                $kind = $this->rememberedKind($chatId, strtolower((string) $documentId));
+                $source = $kind === 'pdf' ? 'pdf' : 'office';
+                $existing = $source === 'office'
+                    ? $this->office->read($chatId, strtolower((string) $documentId))
+                    : $this->pdfs->read($chatId, strtolower((string) $documentId));
                 $stored = [
                     'id' => $existing->id,
                     'name' => $existing->name,
                     'bytes' => $existing->bytes,
                     'pages' => $existing->pageCount,
+                    'kind' => $kind,
                 ];
             }
 
-            $extracted = $this->pdfs->read($chatId, $stored['id']);
+            if (trim($message) === '' && $intent === 'summarize') {
+                $message = match ($kind) {
+                    'xlsx' => __('chat.office_summarize_prompt_sheet'),
+                    'docx' => __('chat.office_summarize_prompt_word'),
+                    default => __('chat.pdf_summarize_prompt'),
+                };
+            }
+
+            if (trim($message) === '') {
+                $this->rememberError(__('chat.message_required'));
+
+                return $this->result();
+            }
+
+            $extracted = $source === 'office'
+                ? $this->office->read($chatId, $stored['id'])
+                : $this->pdfs->read($chatId, $stored['id']);
         } catch (DocumentException $exception) {
             $this->rememberError($exception->userMessage);
 
@@ -819,7 +844,7 @@ class ChatService
         }
 
         $this->rememberDocumentTurn($message, [
-            'kind' => 'pdf',
+            'kind' => $kind,
             'id' => $stored['id'],
             'name' => $stored['name'],
             'bytes' => $stored['bytes'],
@@ -827,7 +852,7 @@ class ChatService
         ]);
 
         try {
-            $plan = $this->documents->plan($extracted, $intent, $message);
+            $plan = $this->documents->plan($extracted, $intent, $message, $source);
         } catch (DocumentException $exception) {
             $this->rememberError($exception->userMessage);
 
@@ -862,7 +887,10 @@ class ChatService
         }
 
         try {
-            $extracted = $this->pdfs->read($this->chatId($pending), $plan->documentId);
+            $chatId = $this->chatId($pending);
+            $extracted = $plan->source === 'office'
+                ? $this->office->read($chatId, $plan->documentId)
+                : $this->pdfs->read($chatId, $plan->documentId);
         } catch (DocumentException $exception) {
             $this->forgetPending();
             $this->forgetDocumentPlan();
@@ -902,7 +930,7 @@ class ChatService
             $pages = $this->pagesAlreadyRead($plan);
             $message = $pages === []
                 ? $exception->userMessage
-                : __('chat.pdf_stopped', ['pages' => $this->documents->formatPages($pages)]);
+                : $this->documents->stoppedMessage($pages, $document->unit);
             $this->rememberError($message);
 
             return $this->result();
@@ -929,6 +957,19 @@ class ChatService
         return $this->result();
     }
 
+    private function rememberedKind(string $chatId, string $id): string
+    {
+        foreach ($this->transcript($chatId) as $turn) {
+            $attachment = $this->documentAttachment($turn);
+
+            if ($attachment !== null && hash_equals($attachment['id'], $id)) {
+                return $attachment['kind'];
+            }
+        }
+
+        throw new DocumentException(__('chat.pdf_missing'));
+    }
+
     /**
      * @param  array{kind: string, id: string, name: string, bytes: int, pages: int}  $attachment
      */
@@ -937,7 +978,7 @@ class ChatService
         $transcript = $this->transcript();
         $lastIndex = $transcript === [] ? null : array_key_last($transcript);
         $last = $lastIndex === null ? null : $transcript[$lastIndex];
-        $lastPdf = is_array($last) ? $this->pdfAttachment($last) : null;
+        $lastPdf = is_array($last) ? $this->documentAttachment($last) : null;
         $sameText = is_array($last)
             && ($last['role'] ?? null) === 'user'
             && ($last['content'] ?? null) === $message

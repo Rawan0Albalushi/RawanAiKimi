@@ -15,5 +15,6 @@ final class ExtractedDocument
         public readonly int $pageCount,
         public readonly array $pages,
         public readonly array $emptyPages,
+        public readonly string $unit = 'page',
     ) {}
 }

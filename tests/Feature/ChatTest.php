@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Http\Middleware\SetLocale;
 use App\Services\ChatStore;
 use Illuminate\Http\Client\Request;
 use Illuminate\Http\UploadedFile;
@@ -564,12 +565,33 @@ class ChatTest extends TestCase
 
     public function test_the_locale_switch_is_shared_with_the_page(): void
     {
-        $this->from('/')->post('/locale', ['locale' => 'ar'])->assertRedirect(route('chat.index'));
+        $this->from('/')->post('/locale', ['locale' => 'ar'])
+            ->assertRedirect(route('chat.index'))
+            ->assertPlainCookie(SetLocale::COOKIE, 'ar');
 
         $this->get('/')->assertInertia(fn (Assert $page) => $page
             ->where('locale', 'ar')
             ->where('copy.send', 'إرسال')
             ->where('copy.status_queue', 'يجري تشغيل النموذج. قد يستغرق ذلك عدة دقائق في المرة الأولى.'));
+    }
+
+    public function test_sending_a_message_keeps_arabic_after_the_session_locale_is_lost(): void
+    {
+        $this->fakeQueue();
+
+        $this->withUnencryptedCookie(SetLocale::COOKIE, 'ar')
+            ->from('/')
+            ->post('/chat', ['message' => 'ما هي عاصمة عمان؟'])
+            ->assertRedirect(route('chat.index'));
+
+        $this->assertNull(session('locale'));
+
+        $this->withUnencryptedCookie(SetLocale::COOKIE, 'ar')
+            ->get('/')
+            ->assertInertia(fn (Assert $page) => $page
+                ->where('locale', 'ar')
+                ->where('copy.send', 'إرسال')
+                ->where('copy.greeting', 'كيف أستطيع مساعدتك اليوم؟'));
     }
 
     public function test_an_image_and_text_are_sent_as_one_data_url_without_history_or_session_bytes(): void

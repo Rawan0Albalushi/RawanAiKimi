@@ -24,6 +24,8 @@ final class DocumentPlan
         public readonly ?string $localReply = null,
         public readonly int $cursor = 0,
         public readonly array $partials = [],
+        public readonly string $source = 'pdf',
+        public readonly string $unit = 'page',
     ) {}
 
     /**
@@ -49,6 +51,8 @@ final class DocumentPlan
             emptyPages: $this->emptyPages,
             cursor: $this->cursor + 1,
             partials: $partials,
+            source: $this->source,
+            unit: $this->unit,
         );
     }
 
@@ -69,6 +73,8 @@ final class DocumentPlan
             'empty_pages' => $this->emptyPages,
             'cursor' => $this->cursor,
             'partials' => $this->partials,
+            'source' => $this->source,
+            'unit' => $this->unit,
         ];
     }
 
@@ -131,6 +137,13 @@ final class DocumentPlan
             $cleanStages[] = $clean;
         }
 
+        $source = $payload['source'] ?? 'pdf';
+        $unit = $payload['unit'] ?? 'page';
+
+        if (! in_array($source, ['pdf', 'office'], true) || ! in_array($unit, ['page', 'section', 'sheet'], true)) {
+            return null;
+        }
+
         $covered = self::intList($payload['covered_pages'] ?? null, 500);
         $uncovered = self::intList($payload['uncovered_pages'] ?? null, 500);
         $empty = self::intList($payload['empty_pages'] ?? null, 500);
@@ -152,6 +165,8 @@ final class DocumentPlan
             emptyPages: $empty,
             cursor: $cursor,
             partials: $partials,
+            source: $source,
+            unit: $unit,
         );
     }
 

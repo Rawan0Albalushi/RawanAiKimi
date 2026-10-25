@@ -1,11 +1,13 @@
 <?php
 
 use App\Http\Controllers\ChatController;
+use App\Http\Middleware\ReadOnlySession;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', [ChatController::class, 'index'])->name('chat.index');
 Route::get('/chat/attachments/{id}', [ChatController::class, 'attachment'])
     ->where('id', '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}')
+    ->middleware(ReadOnlySession::class)
     ->name('chat.attachments.show');
 Route::post('/chat', [ChatController::class, 'store'])->middleware('throttle:chat-send')->name('chat.store');
 Route::post('/chat/poll', [ChatController::class, 'poll'])->middleware('throttle:chat-poll')->name('chat.poll');
